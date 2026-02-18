@@ -45,7 +45,6 @@ type packageCache struct {
 // NewEngine creates a new Engine rooted at the given directory.
 func NewEngine(root string) (e *Engine) {
 	// @require len(root) > 0, "root must not be empty"
-	// @ensure -nd e
 	cache := filepath.Join(root, ".inco_cache")
 	return &Engine{
 		Root:      root,
@@ -56,14 +55,13 @@ func NewEngine(root string) (e *Engine) {
 }
 
 // Run executes the full pipeline: scan -> parse -> inject -> write overlay.
-func (e *Engine) Run() error {
-	if err := os.MkdirAll(e.CacheDir, 0o755); err != nil {
-		return fmt.Errorf("inco: create cache dir: %w", err)
-	}
+func (e *Engine) Run() (err error) {
+	err = os.MkdirAll(e.CacheDir, 0o755) // @must -ret(fmt.Errorf("inco: create cache dir: %w", err))
 
-	err := filepath.Walk(e.Root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
+	// @must -ret
+	err = filepath.Walk(e.Root, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
 		}
 		// Skip hidden dirs, vendor, testdata, and cache itself
 		if info.IsDir() {
@@ -78,26 +76,17 @@ func (e *Engine) Run() error {
 		}
 		return e.processFile(path)
 	})
-	if err != nil {
-		return err
-	}
 
 	return e.writeOverlay()
 }
 
 // processFile scans a single Go file for contract directives.
 // If any are found, it generates a shadow file and registers it in the overlay.
-func (e *Engine) processFile(path string) error {
+func (e *Engine) processFile(path string) (err error) {
 	// @require len(path) > 0, "path must not be empty"
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		return fmt.Errorf("inco: abs path %s: %w", path, err)
-	}
+	absPath, err := filepath.Abs(path) // @must -ret(fmt.Errorf("inco: abs path %s: %w", path, err))
 
-	f, fset, resolver, err := e.loadFileWithTypes(absPath)
-	if err != nil {
-		return err
-	}
+	f, fset, resolver, err := e.loadFileWithTypes(absPath) // @must -ret
 
 	directives := e.collectDirectives(f, fset)
 	if len(directives) == 0 {
@@ -105,10 +94,7 @@ func (e *Engine) processFile(path string) error {
 	}
 
 	// Read original source lines for //line mapping
-	origLines, err := readLines(absPath)
-	if err != nil {
-		return fmt.Errorf("inco: read original %s: %w", path, err)
-	}
+	origLines, err := readLines(absPath) // @must -ret(fmt.Errorf("inco: read original %s: %w", path, err))
 
 	// Inject assertions into AST
 	e.injectAssertions(f, fset, directives, resolver)
@@ -120,9 +106,7 @@ func (e *Engine) processFile(path string) error {
 	// Generate shadow file content
 	var buf strings.Builder
 	cfg := printer.Config{Mode: printer.UseSpaces | printer.TabIndent, Tabwidth: 8}
-	if err := cfg.Fprint(&buf, fset, f); err != nil {
-		return fmt.Errorf("inco: print shadow for %s: %w", path, err)
-	}
+	err = cfg.Fprint(&buf, fset, f) // @must -ret(fmt.Errorf("inco: print shadow for %s: %w", path, err))
 
 	// Post-process: inject //line directives to map back to original source
 	shadowContent := injectLineDirectives(buf.String(), origLines, absPath)
@@ -133,63 +117,48 @@ func (e *Engine) processFile(path string) error {
 	shadowName := fmt.Sprintf("%s_%s.go", base, hash[:12])
 	shadowPath := filepath.Join(e.CacheDir, shadowName)
 
-	if err := os.WriteFile(shadowPath, []byte(shadowContent), 0o644); err != nil {
-		return fmt.Errorf("inco: write shadow %s: %w", shadowPath, err)
-	}
+	err = os.WriteFile(shadowPath, []byte(shadowContent), 0o644) // @must -ret(fmt.Errorf("inco: write shadow %s: %w", shadowPath, err))
 
 	e.Overlay.Replace[absPath] = shadowPath
 	return nil
 }
 
-func (e *Engine) loadFileWithTypes(path string) (*ast.File, *token.FileSet, *TypeResolver, error) {
+func (e *Engine) loadFileWithTypes(path string) (f *ast.File, fset *token.FileSet, resolver *TypeResolver, err error) {
 	// @require len(path) > 0, "path must not be empty"
 	dir := filepath.Dir(path)
 	cache, ok := e.typeCache[dir]
 	if !ok {
-		var err error
-		cache, err = e.loadPackage(dir)
-		if err != nil {
-			return nil, nil, nil, err
-		}
+		cache, err = e.loadPackage(dir) // @must -ret
 		e.typeCache[dir] = cache
 	}
 
-	file := cache.files[path]
-	if file == nil {
-		return nil, nil, nil, fmt.Errorf("inco: file not found in package: %s", path)
-	}
+	f = cache.files[path]
+	// @require -ret(nil, nil, nil, fmt.Errorf("inco: file not found in package: %s", path)) f != nil
 
-	return file, cache.fset, cache.resolver, nil
+	return f, cache.fset, cache.resolver, nil
 }
 
 func (e *Engine) loadPackage(dir string) (*packageCache, error) {
 	// @require len(dir) > 0, "dir must not be empty"
 	fset := token.NewFileSet()
+	// @must -ret(nil, fmt.Errorf("inco: parse dir %s: %w", dir, err))
 	pkgs, err := parser.ParseDir(fset, dir, func(info os.FileInfo) bool {
 		name := info.Name()
 		return strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, "_test.go")
 	}, parser.ParseComments)
-	if err != nil {
-		return nil, fmt.Errorf("inco: parse dir %s: %w", dir, err)
-	}
 
 	var pkg *ast.Package
 	for _, p := range pkgs {
 		pkg = p
 		break
 	}
-	if pkg == nil {
-		return nil, fmt.Errorf("inco: no package in %s", dir)
-	}
+	// @require -ret(nil, fmt.Errorf("inco: no package in %s", dir)) pkg != nil
 
 	fileMap := make(map[string]*ast.File)
 	var files []*ast.File
 	for _, f := range pkg.Files {
 		filename := fset.Position(f.Pos()).Filename
-		abs, err := filepath.Abs(filename)
-		if err != nil {
-			return nil, fmt.Errorf("inco: abs file %s: %w", filename, err)
-		}
+		abs, _ := filepath.Abs(filename) // @must -ret
 		fileMap[abs] = f
 		files = append(files, f)
 	}
@@ -206,6 +175,7 @@ func (e *Engine) loadPackage(dir string) (*packageCache, error) {
 	}
 	pkgTypes, err := conf.Check(pkg.Name, fset, files, info)
 	if err != nil {
+		// Typecheck warnings are diagnostic — code generation continues regardless.
 		fmt.Fprintf(os.Stderr, "inco: typecheck warning in %s: %v\n", dir, err)
 	}
 
@@ -329,9 +299,10 @@ func (e *Engine) processStmtList(stmts []ast.Stmt, startPos token.Pos, fset *tok
 		// Handle block-mode @must: applies to the next assignment statement
 		if pendingMust != nil {
 			if assign, ok := stmt.(*ast.AssignStmt); ok {
-				mustStmts := e.generateMustForAssign(assign, fset, pendingMust)
+				mustStmts, mustImports := e.generateMustForAssign(assign, fset, pendingMust, resolver, f)
 				newList = append(newList, stmt)
 				newList = append(newList, mustStmts...)
+				importsToAdd = append(importsToAdd, mustImports...)
 				stmt = nil                     // mark as handled
 				delete(dirMap, pendingMustPos) // consumed
 			}
@@ -344,9 +315,10 @@ func (e *Engine) processStmtList(stmts []ast.Stmt, startPos token.Pos, fset *tok
 					stmtLine := fset.Position(stmt.Pos()).Line
 					commentLine := fset.Position(pos).Line
 					if di.Directive.Kind == Must && commentLine == stmtLine {
-						mustStmts := e.generateMustForAssign(assign, fset, di)
+						mustStmts, mustImports := e.generateMustForAssign(assign, fset, di, resolver, f)
 						newList = append(newList, stmt)
 						newList = append(newList, mustStmts...)
+						importsToAdd = append(importsToAdd, mustImports...)
 						stmt = nil          // mark as handled
 						delete(dirMap, pos) // consumed
 						break
@@ -372,17 +344,21 @@ func (e *Engine) generateAssertion(di *directiveInfo, fset *token.FileSet, resol
 	switch di.Directive.Kind {
 	case Require:
 		return e.generateRequire(di.Directive, loc, resolver, di.Pos, f)
-	case Ensure:
-		return e.generateEnsure(di.Directive, loc, resolver, di.Pos, f)
 	default:
 		return nil, nil
 	}
 }
 
-// generateRequire generates `if <cond> { panic(...) }` statements for require directives.
+// generateRequire generates assertion statements for require directives.
+// In default mode, generates `if <cond> { panic(...) }`.
+// With -ret flag, generates `if <cond> { return }` (or return with zero values).
+// With -log flag, generates `if <cond> { log.Println(...); return }` (auto-imports log).
 func (e *Engine) generateRequire(d *Directive, loc string, resolver *TypeResolver, pos token.Pos, f *ast.File) ([]ast.Stmt, []string) {
 	// @require -nd d
 	// @require len(loc) > 0, "loc must not be empty"
+	if d.Ret || d.Log {
+		return e.generateRequireRet(d, loc, resolver, pos, f)
+	}
 	if d.ND {
 		return e.generateNDChecks(d.Vars, loc, "require", resolver, pos, f)
 	}
@@ -396,60 +372,123 @@ func (e *Engine) generateRequire(d *Directive, loc string, resolver *TypeResolve
 				fmt.Fprintf(os.Stderr, "inco: %s at %s\n", warn, loc)
 			}
 		}
-		expr, err := parser.ParseExpr(d.Expr)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "inco: parse @require expr failed at %s: %v\n", loc, err)
-			return nil, nil
-		}
+		expr, _ := parser.ParseExpr(d.Expr) // @must -log
 		cond := &ast.UnaryExpr{Op: token.NOT, X: &ast.ParenExpr{X: expr}}
 		return []ast.Stmt{makeIfPanicStmt(cond, fmt.Sprintf("%s at %s", msg, loc))}, nil
 	}
 	return nil, nil
 }
 
-// generateEnsure wraps the check in a defer for postcondition checking.
-func (e *Engine) generateEnsure(d *Directive, loc string, resolver *TypeResolver, pos token.Pos, f *ast.File) ([]ast.Stmt, []string) {
+// generateRequireRet generates require checks that return instead of panicking.
+func (e *Engine) generateRequireRet(d *Directive, loc string, resolver *TypeResolver, pos token.Pos, f *ast.File) ([]ast.Stmt, []string) {
 	// @require -nd d
 	// @require len(loc) > 0, "loc must not be empty"
-	if d.ND {
-		inner, imports := e.generateNDChecks(d.Vars, loc, "ensure", resolver, pos, f)
-		return []ast.Stmt{makeDeferStmt(inner)}, imports
+
+	var retStmt *ast.ReturnStmt
+	var retImports []string
+
+	// Use custom return expressions if provided, otherwise build zero-value return
+	if len(d.RetExprs) > 0 {
+		var retErr error
+		retStmt, retErr = buildCustomReturnStmt(d.RetExprs) // @must -log
+		_ = retErr
+	} else {
+		retStmt, retImports = e.buildReturnStmt(f, pos, resolver)
 	}
+
+	var importsToAdd []string
+	importsToAdd = append(importsToAdd, retImports...)
+
+	if d.Log {
+		importsToAdd = append(importsToAdd, "log")
+	}
+
+	if d.ND {
+		stmts, ndImports := e.generateNDRetChecks(d.Vars, loc, resolver, pos, f, retStmt, d.Log)
+		importsToAdd = append(importsToAdd, ndImports...)
+		return stmts, importsToAdd
+	}
+
 	if d.Expr != "" {
 		msg := d.Message
 		if msg == "" {
-			msg = fmt.Sprintf("inco // ensure violation: %s", d.Expr)
+			msg = fmt.Sprintf("inco // require -ret violation: %s", d.Expr)
 		}
-		expr, err := parser.ParseExpr(d.Expr)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "inco: parse @ensure expr failed at %s: %v\n", loc, err)
-			return nil, nil
+		if resolver != nil {
+			if warn := resolver.EvalRequireExpr(pos, d.Expr); warn != "" {
+				fmt.Fprintf(os.Stderr, "inco: %s at %s\n", warn, loc)
+			}
 		}
+		expr, _ := parser.ParseExpr(d.Expr) // @must -log
 		cond := &ast.UnaryExpr{Op: token.NOT, X: &ast.ParenExpr{X: expr}}
-		inner := []ast.Stmt{makeIfPanicStmt(cond, fmt.Sprintf("%s at %s", msg, loc))}
-		return []ast.Stmt{makeDeferStmt(inner)}, nil
+
+		var body []ast.Stmt
+		if d.Log {
+			body = append(body, makeLogStmt(fmt.Sprintf("%s at %s", msg, loc)))
+		}
+		body = append(body, retStmt)
+
+		stmt := &ast.IfStmt{
+			Cond: cond,
+			Body: &ast.BlockStmt{List: body},
+		}
+		return []ast.Stmt{stmt}, importsToAdd
 	}
+
 	return nil, nil
+}
+
+// generateNDRetChecks generates non-defaulted checks that return instead of panicking.
+func (e *Engine) generateNDRetChecks(vars []string, loc string, resolver *TypeResolver, pos token.Pos, f *ast.File, retStmt *ast.ReturnStmt, doLog bool) ([]ast.Stmt, []string) {
+	// @require len(vars) > 0, "vars must not be empty"
+	// @require len(loc) > 0, "loc must not be empty"
+	// @require -nd resolver
+	var stmts []ast.Stmt
+	var importsToAdd []string
+
+	funcType := findEnclosingFuncType(f, pos)
+	for _, v := range vars {
+		typ := resolver.ResolveVarType(funcType, v)
+		currentPkg := resolver.Pkg
+		zeroExpr := ZeroCheckExpr(v, typ, currentPkg)
+		if zeroExpr == nil {
+			zeroExpr = &ast.BinaryExpr{X: ast.NewIdent(v), Op: token.EQL, Y: ast.NewIdent("nil")}
+		}
+
+		desc := ZeroValueDesc(typ)
+		msg := fmt.Sprintf("inco // require -ret -nd violation: [%s] is defaulted (%s) at %s", v, desc, loc)
+
+		var body []ast.Stmt
+		if doLog {
+			body = append(body, makeLogStmt(msg))
+		}
+		body = append(body, retStmt)
+
+		stmts = append(stmts, &ast.IfStmt{
+			Cond: zeroExpr,
+			Body: &ast.BlockStmt{List: body},
+		})
+
+		if imp := NeedsImport(typ, resolver.Pkg); imp != "" {
+			importsToAdd = append(importsToAdd, imp)
+		}
+	}
+
+	return stmts, importsToAdd
 }
 
 // generateNDChecks generates non-defaulted zero-value panic checks with type awareness.
 func (e *Engine) generateNDChecks(vars []string, loc string, protocol string, resolver *TypeResolver, pos token.Pos, f *ast.File) ([]ast.Stmt, []string) {
 	// @require len(vars) > 0, "vars must not be empty"
 	// @require len(loc) > 0, "loc must not be empty"
+	// @require -nd resolver
 	var stmts []ast.Stmt
 	var importsToAdd []string
 
 	funcType := findEnclosingFuncType(f, pos)
 	for _, v := range vars {
-		var typ types.Type
-		if resolver != nil {
-			typ = resolver.ResolveVarType(funcType, v)
-		}
-
-		var currentPkg *types.Package
-		if resolver != nil {
-			currentPkg = resolver.Pkg
-		}
+		typ := resolver.ResolveVarType(funcType, v)
+		currentPkg := resolver.Pkg
 		zeroExpr := ZeroCheckExpr(v, typ, currentPkg)
 		if zeroExpr == nil {
 			zeroExpr = &ast.BinaryExpr{X: ast.NewIdent(v), Op: token.EQL, Y: ast.NewIdent("nil")}
@@ -459,10 +498,8 @@ func (e *Engine) generateNDChecks(vars []string, loc string, protocol string, re
 		msg := fmt.Sprintf("inco // %s -nd violation: [%s] is defaulted (%s) at %s", protocol, v, desc, loc)
 		stmts = append(stmts, makeIfPanicStmt(zeroExpr, msg))
 
-		if resolver != nil {
-			if imp := NeedsImport(typ, resolver.Pkg); imp != "" {
-				importsToAdd = append(importsToAdd, imp)
-			}
+		if imp := NeedsImport(typ, resolver.Pkg); imp != "" {
+			importsToAdd = append(importsToAdd, imp)
 		}
 	}
 
@@ -470,62 +507,251 @@ func (e *Engine) generateNDChecks(vars []string, loc string, protocol string, re
 }
 
 // generateMustForAssign injects error checking after an assignment that uses _ for the error.
-// It replaces the LAST blank identifier on the LHS, since Go convention places the error
-// as the final return value.
-func (e *Engine) generateMustForAssign(assign *ast.AssignStmt, fset *token.FileSet, di *directiveInfo) []ast.Stmt {
+// It attempts to use type information to identify the error variable. If type info is unavailable,
+// it falls back to heuristics (last blank identifier or explicit "err" variable).
+func (e *Engine) generateMustForAssign(assign *ast.AssignStmt, fset *token.FileSet, di *directiveInfo, resolver *TypeResolver, f *ast.File) ([]ast.Stmt, []string) {
 	// @require -nd assign, fset, di
 	pos := fset.Position(di.Pos)
 	loc := fmt.Sprintf("%s:%d", pos.Filename, pos.Line)
 
-	// Find the LAST _ (blank identifier) in LHS — that's the error position by Go convention.
-	var lastBlank *ast.Ident
-	for _, lhs := range assign.Lhs {
-		ident, ok := lhs.(*ast.Ident)
-		if ok && ident.Name == "_" {
-			lastBlank = ident
+	var errorIdent *ast.Ident
+
+	// Strategy 1: Type-based resolution
+	if resolver != nil && resolver.Info != nil {
+		if len(assign.Rhs) == 1 {
+			// Function call returning multiple values OR single value
+			if tv, ok := resolver.Info.Types[assign.Rhs[0]]; ok {
+				if tuple, ok := tv.Type.(*types.Tuple); ok {
+					// Multi-value return: (T, error)
+					for i := 0; i < tuple.Len() && i < len(assign.Lhs); i++ {
+						if IsErrorType(tuple.At(i).Type()) {
+							if ident, ok := assign.Lhs[i].(*ast.Ident); ok {
+								errorIdent = ident
+							}
+						}
+					}
+				} else if IsErrorType(tv.Type) {
+					// Single value return: error
+					if len(assign.Lhs) == 1 {
+						if ident, ok := assign.Lhs[0].(*ast.Ident); ok {
+							errorIdent = ident
+						}
+					}
+				}
+			}
+		} else if len(assign.Lhs) == len(assign.Rhs) {
+			// Multiple assignments: a, err = x, y
+			for i, rhs := range assign.Rhs {
+				if i < len(assign.Lhs) {
+					if tv, ok := resolver.Info.Types[rhs]; ok {
+						if IsErrorType(tv.Type) {
+							if ident, ok := assign.Lhs[i].(*ast.Ident); ok {
+								errorIdent = ident
+							}
+						}
+					}
+				}
+			}
 		}
 	}
 
-	if lastBlank != nil {
-		errVar := fmt.Sprintf("_inco_err_%d", pos.Line)
-		lastBlank.Name = errVar
+	// Strategy 2: Heuristic fallback (if type resolution failed or didn't find an error)
+	if errorIdent == nil {
+		// Find the LAST _ (blank identifier) in LHS — that's the error position by Go convention.
+		for _, lhs := range assign.Lhs {
+			ident, ok := lhs.(*ast.Ident)
+			if ok && ident.Name == "_" {
+				errorIdent = ident
+			}
+		}
 
-		// Ensure it's a short variable declaration so the new name is declared
-		if assign.Tok == token.ASSIGN {
-			assign.Tok = token.DEFINE
+		// If still no blank identifier found, check for explicit err variable
+		if errorIdent == nil {
+			for _, lhs := range assign.Lhs {
+				ident, ok := lhs.(*ast.Ident)
+				if ok && ident.Name == "err" {
+					errorIdent = ident
+					break
+				}
+			}
+		}
+	}
+
+	if errorIdent != nil {
+		targetName := errorIdent.Name
+		if targetName == "_" {
+			// Replace _ with generated variable
+			targetName = fmt.Sprintf("_inco_err_%d", pos.Line)
+			errorIdent.Name = targetName
+
+			// Ensure it's a short variable declaration so the new name is declared
+			if assign.Tok == token.ASSIGN {
+				assign.Tok = token.DEFINE
+			}
+		}
+
+		// -log mode: log error and return (implies -ret)
+		// -ret mode: return error instead of panicking
+		if di.Directive.Ret {
+			return e.generateMustRetStmts(targetName, di, resolver, f)
 		}
 
 		msg := fmt.Sprintf("inco // must violation at %s", loc)
-		return []ast.Stmt{makeIfPanicErrStmt(errVar, msg)}
+		return []ast.Stmt{makeIfPanicErrStmt(targetName, msg)}, nil
 	}
 
-	// If no blank identifier found, check for explicit err variable
-	for _, lhs := range assign.Lhs {
-		ident, ok := lhs.(*ast.Ident)
-		if ok && ident.Name == "err" {
-			msg := fmt.Sprintf("inco // must violation at %s", loc)
-			return []ast.Stmt{makeIfPanicErrStmt("err", msg)}
+	return nil, nil
+}
+
+// generateMustRetStmts generates return-on-error statements for @must -ret / @must -log.
+// Instead of panicking, it returns the error (and zero values for other returns).
+// With -log, it also logs the error before returning.
+func (e *Engine) generateMustRetStmts(errVar string, di *directiveInfo, resolver *TypeResolver, f *ast.File) ([]ast.Stmt, []string) {
+	// @require len(errVar) > 0, "errVar must not be empty"
+	// @require -nd di
+
+	var retStmt *ast.ReturnStmt
+	var retImports []string
+	var importsToAdd []string
+
+	if len(di.Directive.RetExprs) > 0 {
+		// Custom return expressions: @must -ret(expr1, expr2)
+		var retErr error
+		retStmt, retErr = buildCustomReturnStmt(di.Directive.RetExprs) // @must -ret
+		_ = retErr
+	} else {
+		// Auto-build return: zero values for non-error returns, errVar for error return
+		retStmt, retImports = e.buildMustReturnStmt(f, di.Pos, resolver, errVar)
+		importsToAdd = append(importsToAdd, retImports...)
+	}
+
+	// -log mode: wrap return in log + return block
+	if di.Directive.Log {
+		importsToAdd = append(importsToAdd, "log")
+		pos := di.Pos
+		loc := fmt.Sprintf("%s:%d", resolver.Fset.Position(pos).Filename, resolver.Fset.Position(pos).Line)
+		logMsg := fmt.Sprintf("inco // must -log violation at %s: ", loc)
+		logStmt := &ast.ExprStmt{
+			X: &ast.CallExpr{
+				Fun: &ast.SelectorExpr{
+					X:   ast.NewIdent("log"),
+					Sel: ast.NewIdent("Println"),
+				},
+				Args: []ast.Expr{
+					&ast.BinaryExpr{
+						X:  &ast.BasicLit{Kind: token.STRING, Value: strconv.Quote(logMsg)},
+						Op: token.ADD,
+						Y: &ast.CallExpr{
+							Fun: &ast.SelectorExpr{
+								X:   ast.NewIdent(errVar),
+								Sel: ast.NewIdent("Error"),
+							},
+						},
+					},
+				},
+			},
+		}
+		return []ast.Stmt{makeIfLogReturnErrStmt(errVar, logStmt, retStmt)}, importsToAdd
+	}
+
+	return []ast.Stmt{makeIfReturnErrStmt(errVar, retStmt)}, importsToAdd
+}
+
+// buildMustReturnStmt creates a return statement for @must -ret.
+// Non-error return positions get zero values; the error position gets errVar.
+func (e *Engine) buildMustReturnStmt(f *ast.File, pos token.Pos, resolver *TypeResolver, errVar string) (*ast.ReturnStmt, []string) {
+	// @require -nd f, resolver
+	// @require len(errVar) > 0, "errVar must not be empty"
+
+	funcType := findEnclosingFuncType(f, pos)
+	if funcType == nil || funcType.Results == nil || funcType.Results.NumFields() == 0 {
+		// No return values — just return the error variable (shouldn't normally happen)
+		return &ast.ReturnStmt{Results: []ast.Expr{ast.NewIdent(errVar)}}, nil
+	}
+
+	// Build explicit return: zero values for non-error, errVar for error positions
+	var results []ast.Expr
+	var importsToAdd []string
+
+	for _, field := range funcType.Results.List {
+		count := len(field.Names)
+		if count == 0 {
+			count = 1
+		}
+
+		// Determine if this return type is error
+		isErr := false
+		if tv, ok := resolver.Info.Types[field.Type]; ok {
+			isErr = IsErrorType(tv.Type)
+		}
+		if !isErr {
+			// AST heuristic fallback
+			if ident, ok := field.Type.(*ast.Ident); ok && ident.Name == "error" {
+				isErr = true
+			}
+		}
+
+		for i := 0; i < count; i++ {
+			if isErr {
+				results = append(results, ast.NewIdent(errVar))
+			} else {
+				var zeroExpr ast.Expr
+				if tv, ok := resolver.Info.Types[field.Type]; ok {
+					zeroExpr = ZeroValueLiteral(tv.Type, resolver.Pkg)
+				}
+				if zeroExpr == nil {
+					zeroExpr = zeroValueFromASTType(field.Type)
+				}
+				results = append(results, zeroExpr)
+			}
 		}
 	}
 
-	return nil
+	return &ast.ReturnStmt{Results: results}, importsToAdd
+}
+
+// makeIfReturnErrStmt builds: if <errVar> != nil { return ... }
+func makeIfReturnErrStmt(errVar string, retStmt *ast.ReturnStmt) *ast.IfStmt {
+	// @require len(errVar) > 0, "errVar must not be empty"
+	// @require -nd retStmt
+	return &ast.IfStmt{
+		Cond: &ast.BinaryExpr{
+			X:  ast.NewIdent(errVar),
+			Op: token.NEQ,
+			Y:  ast.NewIdent("nil"),
+		},
+		Body: &ast.BlockStmt{
+			List: []ast.Stmt{retStmt},
+		},
+	}
+}
+
+// makeIfLogReturnErrStmt builds: if <errVar> != nil { <logStmt>; return ... }
+func makeIfLogReturnErrStmt(errVar string, logStmt ast.Stmt, retStmt *ast.ReturnStmt) *ast.IfStmt {
+	// @require len(errVar) > 0, "errVar must not be empty"
+	// @require -nd logStmt, retStmt
+	return &ast.IfStmt{
+		Cond: &ast.BinaryExpr{
+			X:  ast.NewIdent(errVar),
+			Op: token.NEQ,
+			Y:  ast.NewIdent("nil"),
+		},
+		Body: &ast.BlockStmt{
+			List: []ast.Stmt{logStmt, retStmt},
+		},
+	}
 }
 
 // writeOverlay writes the overlay.json file to the cache directory.
-func (e *Engine) writeOverlay() error {
+func (e *Engine) writeOverlay() (err error) {
 	if len(e.Overlay.Replace) == 0 {
 		return nil
 	}
 
-	data, err := json.MarshalIndent(e.Overlay, "", "  ")
-	if err != nil {
-		return fmt.Errorf("inco: marshal overlay: %w", err)
-	}
+	data, err := json.MarshalIndent(e.Overlay, "", "  ") // @must -ret(fmt.Errorf("inco: marshal overlay: %w", err))
 
 	path := filepath.Join(e.CacheDir, "overlay.json")
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return fmt.Errorf("inco: write overlay.json: %w", err)
-	}
+	err = os.WriteFile(path, data, 0o644) // @must -ret(fmt.Errorf("inco: write overlay.json: %w", err))
 
 	fmt.Printf("inco: overlay written to %s (%d file(s) mapped)\n", path, len(e.Overlay.Replace))
 	return nil
@@ -586,17 +812,85 @@ func makeIfPanicErrStmt(errVar string, msg string) *ast.IfStmt {
 	}
 }
 
-// makeDeferStmt wraps statements in: defer func() { ... }()
-func makeDeferStmt(stmts []ast.Stmt) *ast.DeferStmt {
-	// @require len(stmts) > 0, "stmts must not be empty"
-	return &ast.DeferStmt{
-		Call: &ast.CallExpr{
-			Fun: &ast.FuncLit{
-				Type: &ast.FuncType{Params: &ast.FieldList{}},
-				Body: &ast.BlockStmt{List: stmts},
+// makeLogStmt builds: log.Println("<msg>")
+func makeLogStmt(msg string) ast.Stmt {
+	// @require len(msg) > 0, "msg must not be empty"
+	return &ast.ExprStmt{
+		X: &ast.CallExpr{
+			Fun: &ast.SelectorExpr{
+				X:   ast.NewIdent("log"),
+				Sel: ast.NewIdent("Println"),
+			},
+			Args: []ast.Expr{
+				&ast.BasicLit{Kind: token.STRING, Value: strconv.Quote(msg)},
 			},
 		},
 	}
+}
+
+// buildReturnStmt creates a return statement with appropriate zero values for
+// the enclosing function's return types.
+//
+// For named returns: bare return (no values).
+// For unnamed returns: return with zero-value literals for each return type.
+// For void functions: bare return.
+func (e *Engine) buildReturnStmt(f *ast.File, pos token.Pos, resolver *TypeResolver) (*ast.ReturnStmt, []string) {
+	// @require -nd f
+	funcType := findEnclosingFuncType(f, pos)
+	if funcType == nil || funcType.Results == nil || funcType.Results.NumFields() == 0 {
+		return &ast.ReturnStmt{}, nil
+	}
+
+	// Check if all return values are named → bare return
+	allNamed := true
+	for _, field := range funcType.Results.List {
+		if len(field.Names) == 0 {
+			allNamed = false
+			break
+		}
+	}
+	if allNamed {
+		return &ast.ReturnStmt{}, nil
+	}
+
+	// Generate zero-value expressions for unnamed returns
+	var results []ast.Expr
+	var importsToAdd []string
+	for _, field := range funcType.Results.List {
+		count := len(field.Names)
+		if count == 0 {
+			count = 1
+		}
+
+		var zeroExpr ast.Expr
+		if resolver != nil {
+			if tv, ok := resolver.Info.Types[field.Type]; ok {
+				zeroExpr = ZeroValueLiteral(tv.Type, resolver.Pkg)
+			}
+		}
+		if zeroExpr == nil {
+			zeroExpr = zeroValueFromASTType(field.Type)
+		}
+
+		for i := 0; i < count; i++ {
+			results = append(results, zeroExpr)
+		}
+	}
+
+	return &ast.ReturnStmt{Results: results}, importsToAdd
+}
+
+// buildCustomReturnStmt parses custom return expression strings and builds
+// a return statement with those expressions.
+func buildCustomReturnStmt(exprs []string) (_ *ast.ReturnStmt, err error) {
+	// @require len(exprs) > 0, "exprs must not be empty"
+	var results []ast.Expr
+	var expr ast.Expr
+	for _, raw := range exprs {
+		expr, err = parser.ParseExpr(raw) // @must -ret(nil, fmt.Errorf("invalid return expression %q: %w", raw, err))
+		results = append(results, expr)
+	}
+	return &ast.ReturnStmt{Results: results}, nil
 }
 
 func uniqStrings(items []string) []string {
@@ -621,10 +915,7 @@ func contentHash(content string) string {
 // readLines reads a file and returns its lines (without newlines).
 func readLines(path string) ([]string, error) {
 	// @require len(path) > 0, "path must not be empty"
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
+	file, _ := os.Open(path) // @must -ret
 	defer file.Close()
 
 	var lines []string
@@ -707,6 +998,5 @@ func isContractComment(line string) bool {
 	}
 	s = strings.TrimSpace(s[2:])
 	return strings.HasPrefix(s, "@require") ||
-		strings.HasPrefix(s, "@ensure") ||
 		strings.HasPrefix(s, "@must")
 }

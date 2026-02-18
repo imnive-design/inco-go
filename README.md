@@ -10,6 +10,18 @@ Business logic should be pure. Defensive noise (`if x == nil`, `if err != nil`) 
 
 Write the intent; Inco generates the shield.
 
+### `if` is for logic, not for guarding
+
+In an Inco codebase, `if` statements should express **logic flow** — branching on business conditions, selecting behavior, iterating exit criteria. They should *not* be used for:
+
+- **Nil/zero guards** → use `@require -nd` or `@require -ret -nd`
+- **Value-range validation** → use `@require <expr>`
+- **Error propagation** (`if err != nil { return err }`) → use `// @must -ret`
+- **Error wrapping** (`if err != nil { return fmt.Errorf(...) }`) → use `// @must -ret(fmt.Errorf(...))`
+- **Silent error drops** (`if err != nil { return }`) → use `@require -log` or `// @must -ret`
+
+When every defensive check is a directive, the remaining `if` statements in your code carry **real** semantic weight — they represent genuine decisions, not boilerplate.
+
 ## Directives
 
 ```go
@@ -27,8 +39,11 @@ func Transfer(from *Account, to *Account, amount int) {
 |-----------|---------|
 | `// @require -nd var1, var2` | Precondition: variables must not be zero-valued (type-aware) |
 | `// @require <expr>, "msg"` | Precondition: expression must be true |
+| `// @require -ret -nd var` | Precondition: return zero values on violation (instead of panic) |
+| `// @require -ret(e1, e2) -nd var` | Precondition: return custom expressions on violation |
+| `// @require -log -nd var` | Precondition: log message and return on violation |
 | `// @ensure -nd var`         | Postcondition (via `defer`): must not be zero-valued at return |
-| `// @must`                   | Execution assert: error must be nil, panic otherwise |
+| `// @must`                   | Execution assert: error must be nil, panic otherwise |\n| `// @must -ret`              | Error propagation: return error instead of panicking |\n| `// @must -ret(e1, e2)`      | Error handling: return custom expressions on error |
 
 After running `inco gen`, the above is transformed into a shadow file in `.inco_cache/`:
 
@@ -65,6 +80,57 @@ func Transfer(from *Account, to *Account, amount int) {
 ```
 
 Your source stays clean — the shadow files live in `.inco_cache/` and are wired in via `go build -overlay`.
+
+## Soft Contracts: `-ret` and `-ret(...)`
+
+Not every violation warrants a panic. Use `-ret` to return on violation instead:
+
+```go
+// Return zero values on violation (silent guard)
+func SafeGet(db *DB, id string) (*User, error) {
+    // @require -ret -nd db
+    // @require -ret len(id) > 0
+    return db.Query("SELECT * FROM users WHERE id = ?")
+}
+
+// Return custom expressions on violation
+func FindUser(db *DB, id string) (*User, error) {
+    // @require -ret(nil, ErrNotFound) -nd db
+    // @require -ret(nil, fmt.Errorf("invalid id: %s", id)) len(id) > 0
+    return db.Query("SELECT * FROM users WHERE id = ?")
+}
+
+// Log + return on violation (auto-imports "log")
+func Process(order *Order) (result *Receipt) {
+    // @require -log -nd order
+    return
+}
+```
+
+`@must` also supports `-ret` for error propagation:
+
+```go
+// Replace `if err != nil { return err }` boilerplate
+func ProcessFile(path string) error {
+    f, _ := os.Open(path) // @must -ret
+    defer f.Close()
+    return nil
+}
+
+// Custom return expressions on error
+func Fetch(db *DB) (string, error) {
+    res, _ := db.Query("SELECT 1") // @must -ret("", ErrNotFound)
+    return res, nil
+}
+```
+
+Flags are order-insensitive and composable:
+```go
+// @require -ret -nd x              // return zero values if x is defaulted
+// @require -ret(nil, err) -nd x    // return custom expressions if x is defaulted
+// @require -log -nd x              // log + return (implies -ret)
+// @require -log -ret("", err) expr // log + return custom expressions
+```
 
 ## Type-Aware Zero-Value Checks
 
@@ -129,6 +195,9 @@ inco gen
 inco build ./...
 inco test ./...
 inco run .
+
+# Contract coverage audit
+inco audit .
 ```
 
 ## Build from source
@@ -163,14 +232,15 @@ At gen time, constant `@require` expressions that evaluate to `false` are detect
 ```
 cmd/inco/           CLI entry point
 internal/inco/      Core engine:
+  audit.go            Contract coverage auditing
   contract.go         Directive parsing
   engine.go           AST injection, overlay generation, //line mapping
   typecheck.go        Type resolution, zero-value checks, generics support
 example/            Demo files:
   demo.go             Basic directives
   transfer.go         Full directive set
-  edge_cases.go       Closures, multi-line @must, nested ensure
-  generics.go         Type parameters: comparable, any, mixed,  expression mode
+  edge_cases.go       Closures, multi-line @must, -ret/-ret(...)/-log, @must -ret
+  generics.go         Type parameters: comparable, any, mixed, expression mode
 ```
 
 ## Design

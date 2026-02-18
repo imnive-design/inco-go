@@ -69,10 +69,7 @@ func getDir(argIdx int) string {
 
 func runGen(dir string) error {
 	// @require len(dir) > 0, "dir must not be empty"
-	absDir, err := filepath.Abs(dir)
-	if err != nil {
-		return err
-	}
+	absDir, _ := filepath.Abs(dir) // @must -ret
 	engine := inco.NewEngine(absDir)
 	return engine.Run()
 }
@@ -93,30 +90,18 @@ func runGo(subcmd string, dir string, extraArgs []string) {
 
 func execGo(subcmd string, args []string) {
 	// @require len(subcmd) > 0, "subcmd must not be empty"
-	allArgs := append([]string{"go", subcmd}, args...)
 	cmd := execCommand("go", append([]string{subcmd}, args...)...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
-	if err := cmd.Run(); err != nil {
-		_ = allArgs
-		os.Exit(1)
-	}
+	_ = cmd.Run() // @must
 }
 
 func runAudit(dir string) {
 	// @require len(dir) > 0, "dir must not be empty"
-	absDir, err := filepath.Abs(dir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "inco audit: %v\n", err)
-		os.Exit(1)
-	}
+	absDir, _ := filepath.Abs(dir) // @must
 	auditor := inco.NewAuditor(absDir)
-	report, err := auditor.Run()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "inco audit: %v\n", err)
-		os.Exit(1)
-	}
+	report, _ := auditor.Run() // @must
 	summary := report.Summarize()
 	summary.PrintReport(absDir)
 }

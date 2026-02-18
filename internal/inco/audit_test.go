@@ -93,7 +93,6 @@ func (db *DB) Query(q string) (string, error) { return "", nil }
 
 func Fetch(db *DB) (result string) {
 	// @require -nd db
-	// @ensure -nd result
 	res, _ := db.Query("SELECT 1") // @must
 	result = res
 	fmt.Println(result)
@@ -112,20 +111,14 @@ func main() {}
 	if s.RequireCount != 1 {
 		t.Errorf("RequireCount = %d, want 1", s.RequireCount)
 	}
-	if s.EnsureCount != 1 {
-		t.Errorf("EnsureCount = %d, want 1", s.EnsureCount)
-	}
 	if s.MustCount != 1 {
 		t.Errorf("MustCount = %d, want 1", s.MustCount)
 	}
-	if s.TotalDirectives != 3 {
-		t.Errorf("TotalDirectives = %d, want 3", s.TotalDirectives)
+	if s.TotalDirectives != 2 {
+		t.Errorf("TotalDirectives = %d, want 2", s.TotalDirectives)
 	}
 	if s.FuncsWithRequire != 1 {
 		t.Errorf("FuncsWithRequire = %d, want 1", s.FuncsWithRequire)
-	}
-	if s.FuncsWithEnsure != 1 {
-		t.Errorf("FuncsWithEnsure = %d, want 1", s.FuncsWithEnsure)
 	}
 }
 
@@ -245,8 +238,11 @@ func A(x *int) {
 `,
 		"b.go": `package main
 
-func B(y string) (result string) {
-	// @ensure -nd result
+import "fmt"
+
+func B(y string) string {
+	// @require -nd y
+	fmt.Println(y)
 	return y
 }
 `,
@@ -263,11 +259,8 @@ func B(y string) (result string) {
 	if s.FilesWithContracts != 2 {
 		t.Errorf("FilesWithContracts = %d, want 2", s.FilesWithContracts)
 	}
-	if s.FuncsWithRequire != 1 {
-		t.Errorf("FuncsWithRequire = %d, want 1", s.FuncsWithRequire)
-	}
-	if s.FuncsWithEnsure != 1 {
-		t.Errorf("FuncsWithEnsure = %d, want 1", s.FuncsWithEnsure)
+	if s.FuncsWithRequire != 2 {
+		t.Errorf("FuncsWithRequire = %d, want 2", s.FuncsWithRequire)
 	}
 }
 
@@ -353,12 +346,10 @@ func TestAuditSummary_PrintReport(t *testing.T) {
 		FilesWithContracts:      3,
 		TotalFuncs:              10,
 		FuncsWithRequire:        4,
-		FuncsWithEnsure:         2,
 		FuncsWithAny:            5,
 		TotalDirectives:         8,
 		RequireCount:            5,
-		EnsureCount:             2,
-		MustCount:               1,
+		MustCount:               3,
 		TotalErrorAssignments:   3,
 		GuardedErrorAssignments: 1,
 		UncoveredFuncs: []UncoveredFunc{
@@ -645,5 +636,57 @@ func main() {}
 	}
 	if funcMap["Third"].HasRequire != false {
 		t.Error("Third should have HasRequire = false")
+	}
+}
+
+func TestAudit_RetAndLogCounts(t *testing.T) {
+	dir := setupAuditDir(t, map[string]string{
+		"main.go": `package main
+
+import "errors"
+
+var ErrNotFound = errors.New("not found")
+
+func Plain(x *int) {
+	// @require -nd x
+	_ = x
+}
+
+func WithRet(x *int) (result *int) {
+	// @require -ret -nd x
+	return x
+}
+
+func WithRetCustom(x *int) (*int, error) {
+	// @require -ret(nil, ErrNotFound) -nd x
+	return x, nil
+}
+
+func WithLog(x *int) (result *int) {
+	// @require -log -nd x
+	return x
+}
+
+func main() {}
+`,
+	})
+	a := NewAuditor(dir)
+	report, err := a.Run()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := report.Summarize()
+	if s.RequireCount != 4 {
+		t.Errorf("RequireCount = %d, want 4", s.RequireCount)
+	}
+	if s.RetCount != 3 {
+		t.Errorf("RetCount = %d, want 3 (WithRet + WithRetCustom + WithLog)", s.RetCount)
+	}
+	if s.RetCustomCount != 1 {
+		t.Errorf("RetCustomCount = %d, want 1 (WithRetCustom)", s.RetCustomCount)
+	}
+	if s.LogCount != 1 {
+		t.Errorf("LogCount = %d, want 1 (WithLog)", s.LogCount)
 	}
 }

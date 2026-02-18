@@ -16,7 +16,7 @@ type Number interface {
 // FirstNonZero returns the first non-zero-valued element from a slice.
 // The comparable constraint allows inco to use == *new(T) for the zero check.
 func FirstNonZero[T comparable](items []T) (result T) {
-	// @ensure -nd result
+	// @require -nd result
 	for _, v := range items {
 		var zero T
 		if v != zero {

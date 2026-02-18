@@ -385,23 +385,6 @@ func TestMakeIfPanicStmt(t *testing.T) {
 	}
 }
 
-func TestMakeDeferStmt(t *testing.T) {
-	inner := []ast.Stmt{
-		&ast.ExprStmt{X: ast.NewIdent("x")},
-	}
-	ds := makeDeferStmt(inner)
-	if ds.Call == nil {
-		t.Fatal("Call is nil")
-	}
-	funcLit, ok := ds.Call.Fun.(*ast.FuncLit)
-	if !ok {
-		t.Fatal("deferred func is not FuncLit")
-	}
-	if len(funcLit.Body.List) != 1 {
-		t.Errorf("defer body has %d stmts, want 1", len(funcLit.Body.List))
-	}
-}
-
 func TestMakeIfPanicErrStmt(t *testing.T) {
 	stmt := makeIfPanicErrStmt("err", "something failed")
 	bin, ok := stmt.Cond.(*ast.BinaryExpr)
@@ -451,8 +434,9 @@ func TestIsContractComment(t *testing.T) {
 		want bool
 	}{
 		{"// @require -nd x", true},
-		{"  // @ensure -nd result", true},
+		{"  // @require -ret -nd x", true},
 		{"// @must", true},
+		{"// @ensure -nd result", false}, // @ensure removed
 		{"// regular comment", false},
 		{"not a comment", false},
 		{"", false},
@@ -766,11 +750,19 @@ func Bar() (result int, err error) {
 	}
 }
 
-func TestResolveVarType_NilResolver(t *testing.T) {
-	var tr *TypeResolver
+func TestResolveVarType_NilFuncType(t *testing.T) {
+	// With @require -ret -nd funcType, passing nil funcType returns nil (zero value).
+	fset := token.NewFileSet()
+	info := &types.Info{
+		Types:  make(map[ast.Expr]types.TypeAndValue),
+		Defs:   make(map[*ast.Ident]types.Object),
+		Uses:   make(map[*ast.Ident]types.Object),
+		Scopes: make(map[ast.Node]*types.Scope),
+	}
+	tr := &TypeResolver{Info: info, Fset: fset}
 	result := tr.ResolveVarType(nil, "x")
 	if result != nil {
-		t.Errorf("nil resolver should return nil, got %v", result)
+		t.Errorf("nil funcType should return nil, got %v", result)
 	}
 }
 

@@ -172,7 +172,8 @@ func Create(name string, age int) {
 	}
 }
 
-func TestEngine_EnsureND(t *testing.T) {
+func TestEngine_EnsureND_Removed(t *testing.T) {
+	// @ensure was removed — directive should be ignored (no overlay generated)
 	dir := setupTestDir(t, map[string]string{
 		"main.go": `package main
 
@@ -188,13 +189,8 @@ func Find(id int) (result *Item) {
 	if err := e.Run(); err != nil {
 		t.Fatal(err)
 	}
-
-	shadow := readShadow(t, e)
-	if !strings.Contains(shadow, "defer") {
-		t.Error("shadow should contain defer for ensure")
-	}
-	if !strings.Contains(shadow, "result == nil") {
-		t.Error("shadow should contain 'result == nil' check in defer")
+	if len(e.Overlay.Replace) != 0 {
+		t.Errorf("expected 0 overlay entries for removed @ensure, got %d", len(e.Overlay.Replace))
 	}
 }
 
@@ -260,12 +256,9 @@ func TestEngine_Generics_Comparable(t *testing.T) {
 	dir := setupTestDir(t, map[string]string{
 		"main.go": `package main
 
-func First[T comparable](items []T) (result T) {
-	// @ensure -nd result
-	for _, v := range items {
-		return v
-	}
-	return
+func First[T comparable](items []T) T {
+	// @require -nd items
+	return items[0]
 }
 `,
 	})
@@ -275,11 +268,8 @@ func First[T comparable](items []T) (result T) {
 	}
 
 	shadow := readShadow(t, e)
-	if !strings.Contains(shadow, "*new(T)") {
-		t.Errorf("shadow should contain '*new(T)' for comparable type param, got:\n%s", shadow)
-	}
-	if !strings.Contains(shadow, "defer") {
-		t.Error("shadow should contain defer for ensure")
+	if !strings.Contains(shadow, "items == nil") {
+		t.Errorf("shadow should contain 'items == nil' for slice param, got:\n%s", shadow)
 	}
 }
 
@@ -611,7 +601,8 @@ func main() {}
 
 // --- Additional engine tests ---
 
-func TestEngine_EnsureExpr(t *testing.T) {
+func TestEngine_EnsureExpr_Removed(t *testing.T) {
+	// @ensure was removed — directive should be ignored
 	dir := setupTestDir(t, map[string]string{
 		"main.go": `package main
 
@@ -626,20 +617,13 @@ func Compute(x int) (result int) {
 	if err := e.Run(); err != nil {
 		t.Fatal(err)
 	}
-
-	shadow := readShadow(t, e)
-	if !strings.Contains(shadow, "defer") {
-		t.Error("shadow should contain defer for ensure expr")
-	}
-	if !strings.Contains(shadow, "!(result > 0)") {
-		t.Error("shadow should contain negated expression for ensure")
-	}
-	if !strings.Contains(shadow, "result must be positive") {
-		t.Error("shadow should contain custom message")
+	if len(e.Overlay.Replace) != 0 {
+		t.Errorf("expected 0 overlay entries for removed @ensure, got %d", len(e.Overlay.Replace))
 	}
 }
 
-func TestEngine_EnsureExpr_DefaultMessage(t *testing.T) {
+func TestEngine_EnsureExpr_DefaultMessage_Removed(t *testing.T) {
+	// @ensure was removed — directive should be ignored
 	dir := setupTestDir(t, map[string]string{
 		"main.go": `package main
 
@@ -654,10 +638,8 @@ func Compute(x int) (result int) {
 	if err := e.Run(); err != nil {
 		t.Fatal(err)
 	}
-
-	shadow := readShadow(t, e)
-	if !strings.Contains(shadow, "ensure violation") {
-		t.Error("shadow should contain default ensure violation message")
+	if len(e.Overlay.Replace) != 0 {
+		t.Errorf("expected 0 overlay entries for removed @ensure, got %d", len(e.Overlay.Replace))
 	}
 }
 
@@ -810,5 +792,682 @@ func main() {
 	overlayPath := filepath.Join(dir, ".inco_cache", "overlay.json")
 	if _, err := os.Stat(overlayPath); !os.IsNotExist(err) {
 		t.Error("overlay.json should not exist when there are no directives")
+	}
+}
+
+func TestEngine_Must_TypeAware(t *testing.T) {
+	dir := setupTestDir(t, map[string]string{
+		"main.go": `package main
+
+type MyError struct{}
+func (e *MyError) Error() string { return "fail" }
+
+func run() (int, *MyError) {
+	return 42, nil
+}
+
+func main() {
+	// Should pick "e" as the error variable because of its type (*MyError implements error)
+	// even if not named "err" or "_"
+	val, e := run() // @must
+	_ = val
+	_ = e
+}
+`,
+	})
+	e := NewEngine(dir)
+	if err := e.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	shadow := readShadow(t, e)
+
+	// We expect check on 'e'
+	if !strings.Contains(shadow, "if e != nil {") {
+		t.Errorf("shadow should check e != nil, got:\n%s", shadow)
+	}
+}
+
+// --- Tests for -ret and -log flags ---
+
+func TestEngine_RequireRet_ND_NamedReturns(t *testing.T) {
+	dir := setupTestDir(t, map[string]string{
+		"main.go": `package main
+
+type User struct{ Name string }
+
+func FindUser(u *User) (result *User, ok bool) {
+	// @require -ret -nd u
+	return u, true
+}
+`,
+	})
+	e := NewEngine(dir)
+	if err := e.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	shadow := readShadow(t, e)
+	// Should contain nil check
+	if !strings.Contains(shadow, "u == nil") {
+		t.Errorf("shadow should contain 'u == nil' check, got:\n%s", shadow)
+	}
+	// Should contain return (not panic)
+	if strings.Contains(shadow, "panic(") {
+		t.Error("shadow should NOT contain panic for -ret mode")
+	}
+	// Should have bare return (named returns)
+	if !strings.Contains(shadow, "return") {
+		t.Error("shadow should contain return statement")
+	}
+}
+
+func TestEngine_RequireRet_ND_UnnamedReturns(t *testing.T) {
+	dir := setupTestDir(t, map[string]string{
+		"main.go": `package main
+
+type User struct{ Name string }
+
+func GetUser(u *User) (*User, error) {
+	// @require -ret -nd u
+	return u, nil
+}
+`,
+	})
+	e := NewEngine(dir)
+	if err := e.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	shadow := readShadow(t, e)
+	if !strings.Contains(shadow, "u == nil") {
+		t.Errorf("shadow should contain 'u == nil', got:\n%s", shadow)
+	}
+	if strings.Contains(shadow, "panic(") {
+		t.Error("shadow should NOT contain panic for -ret mode")
+	}
+	// Should have return with zero values for unnamed returns
+	if !strings.Contains(shadow, "return nil, nil") {
+		t.Errorf("shadow should contain 'return nil, nil' for unnamed returns, got:\n%s", shadow)
+	}
+}
+
+func TestEngine_RequireRet_Expr(t *testing.T) {
+	dir := setupTestDir(t, map[string]string{
+		"main.go": `package main
+
+import "fmt"
+
+func Process(amount int) (result string) {
+	// @require -ret amount > 0
+	result = fmt.Sprintf("amount: %d", amount)
+	return
+}
+`,
+	})
+	e := NewEngine(dir)
+	if err := e.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	shadow := readShadow(t, e)
+	if !strings.Contains(shadow, "!(amount > 0)") {
+		t.Errorf("shadow should contain negated expression, got:\n%s", shadow)
+	}
+	if strings.Contains(shadow, "panic(") {
+		t.Error("shadow should NOT contain panic for -ret mode")
+	}
+	if !strings.Contains(shadow, "return") {
+		t.Error("shadow should contain return for -ret mode")
+	}
+}
+
+func TestEngine_RequireLog_ND(t *testing.T) {
+	dir := setupTestDir(t, map[string]string{
+		"main.go": `package main
+
+type User struct{ Name string }
+
+func FindUser(u *User) (result *User) {
+	// @require -log -nd u
+	return u
+}
+`,
+	})
+	e := NewEngine(dir)
+	if err := e.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	shadow := readShadow(t, e)
+	if !strings.Contains(shadow, "u == nil") {
+		t.Errorf("shadow should contain 'u == nil', got:\n%s", shadow)
+	}
+	if strings.Contains(shadow, "panic(") {
+		t.Error("shadow should NOT contain panic for -log mode")
+	}
+	// Should have log.Println
+	if !strings.Contains(shadow, "log.Println") {
+		t.Errorf("shadow should contain log.Println, got:\n%s", shadow)
+	}
+	// Should auto-import log
+	if !strings.Contains(shadow, `"log"`) {
+		t.Errorf("shadow should auto-import log, got:\n%s", shadow)
+	}
+	// Should also return
+	if !strings.Contains(shadow, "return") {
+		t.Error("shadow should contain return for -log mode")
+	}
+}
+
+func TestEngine_RequireLog_Expr(t *testing.T) {
+	dir := setupTestDir(t, map[string]string{
+		"main.go": `package main
+
+import "fmt"
+
+func Transfer(amount int) string {
+	// @require -log amount > 0, "amount must be positive"
+	return fmt.Sprintf("transferred: %d", amount)
+}
+`,
+	})
+	e := NewEngine(dir)
+	if err := e.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	shadow := readShadow(t, e)
+	if !strings.Contains(shadow, "!(amount > 0)") {
+		t.Errorf("shadow should contain negated expression, got:\n%s", shadow)
+	}
+	if !strings.Contains(shadow, "log.Println") {
+		t.Errorf("shadow should contain log.Println, got:\n%s", shadow)
+	}
+	if !strings.Contains(shadow, "amount must be positive") {
+		t.Errorf("shadow should contain custom message, got:\n%s", shadow)
+	}
+	if strings.Contains(shadow, "panic(") {
+		t.Error("shadow should NOT contain panic for -log mode")
+	}
+}
+
+func TestEngine_RequireRet_VoidFunc(t *testing.T) {
+	dir := setupTestDir(t, map[string]string{
+		"main.go": `package main
+
+import "fmt"
+
+func Greet(name string) {
+	// @require -ret -nd name
+	fmt.Println("Hello", name)
+}
+`,
+	})
+	e := NewEngine(dir)
+	if err := e.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	shadow := readShadow(t, e)
+	if !strings.Contains(shadow, `name == ""`) {
+		t.Errorf("shadow should contain string zero check, got:\n%s", shadow)
+	}
+	if strings.Contains(shadow, "panic(") {
+		t.Error("shadow should NOT contain panic for -ret mode")
+	}
+}
+
+func TestEngine_RequireRet_MultipleVars(t *testing.T) {
+	dir := setupTestDir(t, map[string]string{
+		"main.go": `package main
+
+import "fmt"
+
+func Multi(a *int, b string) (ok bool) {
+	// @require -ret -nd a, b
+	fmt.Println(a, b)
+	return true
+}
+`,
+	})
+	e := NewEngine(dir)
+	if err := e.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	shadow := readShadow(t, e)
+	if !strings.Contains(shadow, "a == nil") {
+		t.Error("should check a == nil (pointer)")
+	}
+	if !strings.Contains(shadow, `b == ""`) {
+		t.Error(`should check b == "" (string)`)
+	}
+	if strings.Contains(shadow, "panic(") {
+		t.Error("should NOT contain panic for -ret mode")
+	}
+}
+
+func TestEngine_RequireLog_AutoImport(t *testing.T) {
+	// Verifies that "log" is auto-imported even when the original file doesn't use it
+	dir := setupTestDir(t, map[string]string{
+		"main.go": `package main
+
+func Check(x *int) (result int) {
+	// @require -log -nd x
+	return *x
+}
+`,
+	})
+	e := NewEngine(dir)
+	if err := e.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	shadow := readShadow(t, e)
+	if !strings.Contains(shadow, `"log"`) {
+		t.Errorf("shadow must auto-import log package, got:\n%s", shadow)
+	}
+}
+
+func TestEngine_RequireRet_Closure(t *testing.T) {
+	dir := setupTestDir(t, map[string]string{
+		"main.go": `package main
+
+import "fmt"
+
+func Outer() {
+	f := func(x *int) int {
+		// @require -ret -nd x
+		return *x
+	}
+	fmt.Println(f(nil))
+}
+`,
+	})
+	e := NewEngine(dir)
+	if err := e.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	shadow := readShadow(t, e)
+	if !strings.Contains(shadow, "x == nil") {
+		t.Error("should contain nil check for closure param with -ret")
+	}
+	if strings.Contains(shadow, "panic(") {
+		t.Error("should NOT contain panic for -ret in closure")
+	}
+}
+
+// --- Tests for -ret(expr, ...) custom return expressions ---
+
+func TestEngine_RetExprs_ND(t *testing.T) {
+	dir := setupTestDir(t, map[string]string{
+		"main.go": `package main
+
+import "errors"
+
+var ErrNotFound = errors.New("not found")
+
+type DB struct{}
+
+func (db *DB) FindUser(id string) (*DB, error) {
+	// @require -ret(nil, ErrNotFound) -nd id
+	return db, nil
+}
+`,
+	})
+	e := NewEngine(dir)
+	if err := e.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	shadow := readShadow(t, e)
+	if !strings.Contains(shadow, `id == ""`) {
+		t.Errorf("shadow should contain string zero check, got:\n%s", shadow)
+	}
+	if !strings.Contains(shadow, "ErrNotFound") {
+		t.Errorf("shadow should contain custom return expr 'ErrNotFound', got:\n%s", shadow)
+	}
+	if strings.Contains(shadow, "panic(") {
+		t.Error("shadow should NOT contain panic for -ret mode")
+	}
+}
+
+func TestEngine_RetExprs_Expr(t *testing.T) {
+	dir := setupTestDir(t, map[string]string{
+		"main.go": `package main
+
+import "errors"
+
+var ErrInvalid = errors.New("invalid")
+
+func Process(amount int) (string, error) {
+	// @require -ret("", ErrInvalid) amount > 0
+	return "ok", nil
+}
+`,
+	})
+	e := NewEngine(dir)
+	if err := e.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	shadow := readShadow(t, e)
+	if !strings.Contains(shadow, "!(amount > 0)") {
+		t.Errorf("shadow should contain negated expression, got:\n%s", shadow)
+	}
+	if !strings.Contains(shadow, "ErrInvalid") {
+		t.Errorf("shadow should contain 'ErrInvalid' return expr, got:\n%s", shadow)
+	}
+	if strings.Contains(shadow, "panic(") {
+		t.Error("should NOT contain panic")
+	}
+}
+
+func TestEngine_RetExprs_NestedCall(t *testing.T) {
+	dir := setupTestDir(t, map[string]string{
+		"main.go": `package main
+
+import "fmt"
+
+func Fetch(id string) (string, error) {
+	// @require -ret("", fmt.Errorf("bad id: %s", id)) len(id) > 0
+	return id, nil
+}
+`,
+	})
+	e := NewEngine(dir)
+	if err := e.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	shadow := readShadow(t, e)
+	if !strings.Contains(shadow, "fmt.Errorf") {
+		t.Errorf("shadow should contain fmt.Errorf call, got:\n%s", shadow)
+	}
+	if !strings.Contains(shadow, "!(len(id) > 0)") {
+		t.Errorf("shadow should contain negated expression, got:\n%s", shadow)
+	}
+}
+
+func TestEngine_RetExprs_WithLog(t *testing.T) {
+	dir := setupTestDir(t, map[string]string{
+		"main.go": `package main
+
+import "errors"
+
+var ErrBadAmount = errors.New("bad amount")
+
+func Transfer(amount int) (string, error) {
+	// @require -log -ret("", ErrBadAmount) amount > 0, "amount must be positive"
+	return "ok", nil
+}
+`,
+	})
+	e := NewEngine(dir)
+	if err := e.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	shadow := readShadow(t, e)
+	if !strings.Contains(shadow, "log.Println") {
+		t.Errorf("shadow should contain log.Println, got:\n%s", shadow)
+	}
+	if !strings.Contains(shadow, "ErrBadAmount") {
+		t.Errorf("shadow should contain custom return expr, got:\n%s", shadow)
+	}
+	if !strings.Contains(shadow, "amount must be positive") {
+		t.Errorf("shadow should contain custom message, got:\n%s", shadow)
+	}
+	if strings.Contains(shadow, "panic(") {
+		t.Error("should NOT contain panic")
+	}
+}
+
+func TestEngine_RetExprs_SingleValue(t *testing.T) {
+	dir := setupTestDir(t, map[string]string{
+		"main.go": `package main
+
+func GetDefault(x *int) int {
+	// @require -ret(-1) -nd x
+	return *x
+}
+`,
+	})
+	e := NewEngine(dir)
+	if err := e.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	shadow := readShadow(t, e)
+	if !strings.Contains(shadow, "x == nil") {
+		t.Errorf("shadow should contain nil check, got:\n%s", shadow)
+	}
+	if !strings.Contains(shadow, "-1") {
+		t.Errorf("shadow should contain '-1' as custom return, got:\n%s", shadow)
+	}
+	if strings.Contains(shadow, "panic(") {
+		t.Error("should NOT contain panic")
+	}
+}
+
+func TestEngine_MustRet_Inline_SingleError(t *testing.T) {
+	dir := setupTestDir(t, map[string]string{
+		"main.go": `package main
+
+import "os"
+
+func Run() error {
+	err := os.MkdirAll("/tmp/test", 0o755) // @must -ret
+	_ = err
+	return nil
+}
+`,
+	})
+	e := NewEngine(dir)
+	if err := e.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	shadow := readShadow(t, e)
+	if !strings.Contains(shadow, "err != nil") {
+		t.Errorf("shadow should contain 'err != nil' check, got:\n%s", shadow)
+	}
+	if !strings.Contains(shadow, "return err") {
+		t.Errorf("shadow should contain 'return err', got:\n%s", shadow)
+	}
+	if strings.Contains(shadow, "panic(") {
+		t.Error("should NOT contain panic for @must -ret")
+	}
+}
+
+func TestEngine_MustRet_Inline_MultiReturn(t *testing.T) {
+	dir := setupTestDir(t, map[string]string{
+		"main.go": `package main
+
+type DB struct{}
+func (db *DB) Query(q string) (string, error) { return "ok", nil }
+
+func Fetch(db *DB) (string, error) {
+	res, _ := db.Query("SELECT 1") // @must -ret
+	return res, nil
+}
+`,
+	})
+	e := NewEngine(dir)
+	if err := e.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	shadow := readShadow(t, e)
+	if !strings.Contains(shadow, "_inco_err_") {
+		t.Error("shadow should contain generated _inco_err_ variable")
+	}
+	if !strings.Contains(shadow, "!= nil") {
+		t.Errorf("shadow should contain '!= nil' check, got:\n%s", shadow)
+	}
+	// Should return zero string + error, not panic
+	if strings.Contains(shadow, "panic(") {
+		t.Error("should NOT contain panic for @must -ret")
+	}
+	if !strings.Contains(shadow, "return") {
+		t.Errorf("shadow should contain return statement, got:\n%s", shadow)
+	}
+}
+
+func TestEngine_MustRet_Block(t *testing.T) {
+	dir := setupTestDir(t, map[string]string{
+		"main.go": `package main
+
+type DB struct{}
+func (db *DB) Query(q string) (string, error) { return "ok", nil }
+
+func FetchBlock(db *DB) (string, error) {
+	// @must -ret
+	res, _ := db.Query(
+		"SELECT 1",
+	)
+	return res, nil
+}
+`,
+	})
+	e := NewEngine(dir)
+	if err := e.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	shadow := readShadow(t, e)
+	if !strings.Contains(shadow, "_inco_err_") {
+		t.Error("shadow should contain generated _inco_err_ variable")
+	}
+	if strings.Contains(shadow, "panic(") {
+		t.Error("should NOT contain panic for @must -ret block mode")
+	}
+}
+
+func TestEngine_MustRet_ExplicitErr(t *testing.T) {
+	dir := setupTestDir(t, map[string]string{
+		"main.go": `package main
+
+type DB struct{}
+func (db *DB) Query(q string) (string, error) { return "ok", nil }
+
+func FetchExplicit(db *DB) (string, error) {
+	res, err := db.Query("SELECT 1") // @must -ret
+	return res, err
+}
+`,
+	})
+	e := NewEngine(dir)
+	if err := e.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	shadow := readShadow(t, e)
+	if !strings.Contains(shadow, "err != nil") {
+		t.Errorf("shadow should contain 'err != nil', got:\n%s", shadow)
+	}
+	if strings.Contains(shadow, "panic(") {
+		t.Error("should NOT contain panic")
+	}
+}
+
+func TestEngine_MustRetExprs_Custom(t *testing.T) {
+	dir := setupTestDir(t, map[string]string{
+		"main.go": `package main
+
+import "errors"
+
+var ErrNotFound = errors.New("not found")
+
+type DB struct{}
+func (db *DB) Query(q string) (string, error) { return "ok", nil }
+
+func FetchCustom(db *DB) (string, error) {
+	res, _ := db.Query("SELECT 1") // @must -ret("", ErrNotFound)
+	return res, nil
+}
+`,
+	})
+	e := NewEngine(dir)
+	if err := e.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	shadow := readShadow(t, e)
+	if !strings.Contains(shadow, "ErrNotFound") {
+		t.Errorf("shadow should contain custom return expression 'ErrNotFound', got:\n%s", shadow)
+	}
+	if strings.Contains(shadow, "panic(") {
+		t.Error("should NOT contain panic")
+	}
+}
+
+// --- Tests for @must -log ---
+
+func TestEngine_MustLog_Inline(t *testing.T) {
+	dir := setupTestDir(t, map[string]string{
+		"main.go": `package main
+
+type DB struct{}
+func (db *DB) Query(q string) (string, error) { return "ok", nil }
+
+func Fetch(db *DB) (string, error) {
+	res, _ := db.Query("SELECT 1") // @must -log
+	return res, nil
+}
+`,
+	})
+	e := NewEngine(dir)
+	if err := e.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	shadow := readShadow(t, e)
+	if !strings.Contains(shadow, "_inco_err_") {
+		t.Error("shadow should contain generated _inco_err_ variable")
+	}
+	if !strings.Contains(shadow, "log.Println") {
+		t.Errorf("shadow should contain log.Println for @must -log, got:\n%s", shadow)
+	}
+	if !strings.Contains(shadow, `"log"`) {
+		t.Errorf("shadow should auto-import log, got:\n%s", shadow)
+	}
+	if strings.Contains(shadow, "panic(") {
+		t.Error("should NOT contain panic for @must -log")
+	}
+	if !strings.Contains(shadow, "return") {
+		t.Error("shadow should contain return statement")
+	}
+}
+
+func TestEngine_MustLog_Block(t *testing.T) {
+	dir := setupTestDir(t, map[string]string{
+		"main.go": `package main
+
+type DB struct{}
+func (db *DB) Query(q string) (string, error) { return "ok", nil }
+
+func FetchBlock(db *DB) (string, error) {
+	// @must -log
+	res, _ := db.Query(
+		"SELECT 1",
+	)
+	return res, nil
+}
+`,
+	})
+	e := NewEngine(dir)
+	if err := e.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	shadow := readShadow(t, e)
+	if !strings.Contains(shadow, "log.Println") {
+		t.Errorf("shadow should contain log.Println for @must -log block, got:\n%s", shadow)
+	}
+	if strings.Contains(shadow, "panic(") {
+		t.Error("should NOT contain panic for @must -log block mode")
 	}
 }

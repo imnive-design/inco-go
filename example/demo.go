@@ -38,9 +38,9 @@ func FetchUser(db *DB) *User {
 	return res
 }
 
-// SafeProcess demonstrates @ensure -nd (postcondition)
+// SafeProcess demonstrates @require -nd (precondition)
 func SafeProcess(id string) (result *User) {
-	// @ensure -nd result
+	// @require len(id) > 0, "id must not be empty"
 
 	if id == "valid" {
 		return &User{Name: "found"}

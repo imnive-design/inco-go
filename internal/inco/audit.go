@@ -30,9 +30,8 @@ type FuncAudit struct {
 	Name       string
 	Line       int
 	Params     []ParamInfo   // parameters eligible for contracts
-	Returns    []ParamInfo   // named return values eligible for @ensure
+	Returns    []ParamInfo   // named return values
 	HasRequire bool          // has at least one @require
-	HasEnsure  bool          // has at least one @ensure
 	Directives []DirectiveAt // all directives found in this function
 	// Derived from analysis
 	ErrorAssignments   int // assignments that discard errors (have _ for error)
@@ -47,9 +46,12 @@ type ParamInfo struct {
 
 // DirectiveAt records a directive and its location.
 type DirectiveAt struct {
-	Kind Kind
-	Line int
-	Text string // original comment text
+	Kind      Kind
+	Line      int
+	Text      string // original comment text
+	Ret       bool   // has -ret flag
+	RetCustom bool   // has -ret(expr, ...) custom expressions
+	Log       bool   // has -log flag
 }
 
 // AuditSummary is the aggregate statistics across all files.
@@ -59,13 +61,17 @@ type AuditSummary struct {
 
 	TotalFuncs       int
 	FuncsWithRequire int
-	FuncsWithEnsure  int
 	FuncsWithAny     int // has at least one directive of any kind
 
-	TotalDirectives int
-	RequireCount    int
-	EnsureCount     int
-	MustCount       int
+	TotalDirectives    int
+	RequireCount       int
+	MustCount          int
+	MustRetCount       int // @must with -ret flag
+	MustRetCustomCount int // @must with -ret(expr, ...) custom expressions
+	MustLogCount       int // @must with -log flag
+	RetCount           int // @require with -ret flag
+	RetCustomCount     int // @require with -ret(expr, ...) custom expressions
+	LogCount           int // @require with -log flag
 
 	TotalErrorAssignments   int
 	GuardedErrorAssignments int
@@ -84,6 +90,9 @@ type UncoveredFunc struct {
 // Summarize computes aggregate statistics from the audit report.
 func (r *AuditReport) Summarize() AuditSummary {
 	// @require -nd r
+	if r == nil {
+		return AuditSummary{}
+	}
 	var s AuditSummary
 	s.TotalFiles = len(r.Files)
 	for _, f := range r.Files {
@@ -96,18 +105,30 @@ func (r *AuditReport) Summarize() AuditSummary {
 				switch d.Kind {
 				case Require:
 					s.RequireCount++
-				case Ensure:
-					s.EnsureCount++
+					if d.Ret {
+						s.RetCount++
+						if d.RetCustom {
+							s.RetCustomCount++
+						}
+					}
+					if d.Log {
+						s.LogCount++
+					}
 				case Must:
 					s.MustCount++
+					if d.Ret {
+						s.MustRetCount++
+						if d.RetCustom {
+							s.MustRetCustomCount++
+						}
+					}
+					if d.Log {
+						s.MustLogCount++
+					}
 				}
 			}
 			if fn.HasRequire {
 				s.FuncsWithRequire++
-				hasAny = true
-			}
-			if fn.HasEnsure {
-				s.FuncsWithEnsure++
 				hasAny = true
 			}
 			if len(fn.Directives) > 0 {
@@ -135,6 +156,7 @@ func (r *AuditReport) Summarize() AuditSummary {
 
 // FuncCoverage returns the percentage of functions with at least one contract.
 func (s *AuditSummary) FuncCoverage() float64 {
+	// @require -ret(100.0) s.TotalFuncs > 0
 	if s.TotalFuncs == 0 {
 		return 100.0
 	}
@@ -143,6 +165,7 @@ func (s *AuditSummary) FuncCoverage() float64 {
 
 // ErrorCoverage returns the percentage of error-discarding assignments guarded by @must.
 func (s *AuditSummary) ErrorCoverage() float64 {
+	// @require -ret(100.0) s.TotalErrorAssignments > 0
 	if s.TotalErrorAssignments == 0 {
 		return 100.0
 	}
@@ -164,8 +187,25 @@ func (s *AuditSummary) PrintReport(root string) {
 
 	fmt.Println("  Directives:")
 	fmt.Printf("    @require             %d\n", s.RequireCount)
-	fmt.Printf("    @ensure              %d\n", s.EnsureCount)
+	if s.RetCount > 0 {
+		fmt.Printf("      ├─ -ret            %d\n", s.RetCount)
+	}
+	if s.RetCustomCount > 0 {
+		fmt.Printf("      ├─ -ret(...)       %d\n", s.RetCustomCount)
+	}
+	if s.LogCount > 0 {
+		fmt.Printf("      └─ -log            %d\n", s.LogCount)
+	}
 	fmt.Printf("    @must                %d\n", s.MustCount)
+	if s.MustRetCount > 0 {
+		fmt.Printf("      ├─ -ret            %d\n", s.MustRetCount)
+	}
+	if s.MustRetCustomCount > 0 {
+		fmt.Printf("      ├─ -ret(...)       %d\n", s.MustRetCustomCount)
+	}
+	if s.MustLogCount > 0 {
+		fmt.Printf("      └─ -log            %d\n", s.MustLogCount)
+	}
 	fmt.Printf("    total                %d\n", s.TotalDirectives)
 	fmt.Println()
 
@@ -173,8 +213,7 @@ func (s *AuditSummary) PrintReport(root string) {
 	fmt.Println("  Coverage:")
 	fmt.Printf("    functions w/ contracts   %d / %d  (%.1f%%)\n",
 		s.FuncsWithAny, s.TotalFuncs, s.FuncCoverage())
-	fmt.Printf("      ├─ with @require       %d\n", s.FuncsWithRequire)
-	fmt.Printf("      └─ with @ensure        %d\n", s.FuncsWithEnsure)
+	fmt.Printf("      └─ with @require       %d\n", s.FuncsWithRequire)
 	fmt.Printf("    error assigns guarded    %d / %d  (%.1f%%)\n",
 		s.GuardedErrorAssignments, s.TotalErrorAssignments, s.ErrorCoverage())
 	fmt.Println()
@@ -228,17 +267,17 @@ type Auditor struct {
 // NewAuditor creates a new Auditor for the given project root.
 func NewAuditor(root string) (a *Auditor) {
 	// @require len(root) > 0, "root must not be empty"
-	// @ensure -nd a
 	return &Auditor{Root: root}
 }
 
 // Run performs the audit and returns the report.
-func (a *Auditor) Run() (*AuditReport, error) {
-	report := &AuditReport{Root: a.Root}
+func (a *Auditor) Run() (report *AuditReport, err error) {
+	report = &AuditReport{Root: a.Root}
 
-	err := filepath.Walk(a.Root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
+	// @must -ret
+	err = filepath.Walk(a.Root, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
 		}
 		if info.IsDir() {
 			base := info.Name()
@@ -250,18 +289,12 @@ func (a *Auditor) Run() (*AuditReport, error) {
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		fa, auditErr := a.auditFile(path)
-		if auditErr != nil {
-			return auditErr
-		}
+		fa, _ := a.auditFile(path) // @must -ret
 		if fa != nil {
 			report.Files = append(report.Files, *fa)
 		}
 		return nil
 	})
-	if err != nil {
-		return nil, err
-	}
 
 	// Sort files by path for deterministic output
 	sort.Slice(report.Files, func(i, j int) bool {
@@ -272,22 +305,16 @@ func (a *Auditor) Run() (*AuditReport, error) {
 }
 
 // auditFile analyzes a single Go file for contract coverage.
-func (a *Auditor) auditFile(path string) (*FileAudit, error) {
+func (a *Auditor) auditFile(path string) (_ *FileAudit, err error) {
 	// @require len(path) > 0, "path must not be empty"
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		return nil, err
-	}
-	relPath, err := filepath.Rel(a.Root, absPath)
-	if err != nil {
+	absPath, _ := filepath.Abs(path) // @must -ret
+	relPath, relErr := filepath.Rel(a.Root, absPath)
+	if relErr != nil {
 		relPath = absPath
 	}
 
 	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, absPath, nil, parser.ParseComments)
-	if err != nil {
-		return nil, fmt.Errorf("inco audit: parse %s: %w", relPath, err)
-	}
+	f, err := parser.ParseFile(fset, absPath, nil, parser.ParseComments) // @must -ret(nil, fmt.Errorf("inco audit: parse %s: %w", relPath, err))
 
 	fa := &FileAudit{
 		Path:    absPath,
@@ -382,15 +409,16 @@ func (a *Auditor) auditFunc(fn *ast.FuncDecl, fset *token.FileSet, f *ast.File, 
 	for _, cd := range allDirectives {
 		if cd.pos > bodyStart && cd.pos < bodyEnd {
 			audit.Directives = append(audit.Directives, DirectiveAt{
-				Kind: cd.d.Kind,
-				Line: cd.line,
-				Text: cd.text,
+				Kind:      cd.d.Kind,
+				Line:      cd.line,
+				Text:      cd.text,
+				Ret:       cd.d.Ret,
+				RetCustom: cd.d.Ret && len(cd.d.RetExprs) > 0,
+				Log:       cd.d.Log,
 			})
 			switch cd.d.Kind {
 			case Require:
 				audit.HasRequire = true
-			case Ensure:
-				audit.HasEnsure = true
 			}
 		}
 	}

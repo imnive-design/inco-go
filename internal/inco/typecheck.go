@@ -21,6 +21,7 @@ type TypeResolver struct {
 func (tr *TypeResolver) ResolveVarType(funcType *ast.FuncType, varName string) types.Type {
 	// @require -nd tr
 	// @require tr.Info != nil, "TypeResolver.Info must be initialized"
+	// @require -ret -nd funcType
 	if funcType == nil {
 		return nil
 	}
@@ -93,6 +94,9 @@ func (tr *TypeResolver) EvalRequireExpr(pos token.Pos, expr string) string {
 //	unknown / non-comparable             → var == nil  (fallback)
 func ZeroCheckExpr(varName string, typ types.Type, currentPkg *types.Package) ast.Expr {
 	// @require len(varName) > 0, "varName must not be empty"
+
+	// Guard: nil typ → fallback to nil check (also enforced by inco directive below)
+	// @require -ret(nilCheckExpr(varName)) -nd typ
 	if typ == nil {
 		return nilCheckExpr(varName)
 	}
@@ -241,6 +245,7 @@ func nilCheckExpr(varName string) ast.Expr {
 // ZeroValueDesc returns a human-readable description of the zero value for use
 // in panic messages.
 func ZeroValueDesc(typ types.Type) string {
+	// @require -ret("nil") -nd typ
 	if typ == nil {
 		return "nil"
 	}
@@ -352,9 +357,7 @@ func findEnclosingFuncType(f *ast.File, pos token.Pos) *ast.FuncType {
 // Only struct and array types generate composite literals (T{}) that reference
 // the type name; other zero-value checks (== nil, == 0, etc.) don't need imports.
 func NeedsImport(typ types.Type, currentPkg *types.Package) string {
-	if typ == nil {
-		return ""
-	}
+	// @require -ret -nd typ
 
 	// Generic type parameters: non-comparable ones need "reflect"
 	if tp, ok := typ.(*types.TypeParam); ok {
@@ -388,4 +391,114 @@ func NeedsImport(typ types.Type, currentPkg *types.Package) string {
 		return ""
 	}
 	return pkg.Path()
+}
+
+// IsErrorType checks if the type implements the builtin error interface.
+func IsErrorType(t types.Type) bool {
+	// @require -ret -nd t
+	errType := types.Universe.Lookup("error").Type().Underlying().(*types.Interface)
+	return types.Implements(t, errType)
+}
+
+// ZeroValueLiteral generates an AST expression representing the zero value
+// of the given type, suitable for use in return statements.
+//
+// Type → Generated literal:
+//
+//	pointer/slice/map/chan/func/interface → nil
+//	string                               → ""
+//	integer                              → 0
+//	float                                → 0
+//	complex                              → 0
+//	bool                                 → false
+//	struct                               → T{}
+//	array                                → [N]T{}
+//	type param                           → *new(T)
+func ZeroValueLiteral(typ types.Type, currentPkg *types.Package) ast.Expr {
+	// @require -ret(ast.NewIdent("nil")) -nd typ
+
+	// Handle generic type parameters
+	if tp, ok := typ.(*types.TypeParam); ok {
+		return &ast.StarExpr{
+			X: &ast.CallExpr{
+				Fun:  ast.NewIdent("new"),
+				Args: []ast.Expr{ast.NewIdent(tp.Obj().Name())},
+			},
+		}
+	}
+
+	underlying := typ.Underlying()
+
+	switch t := underlying.(type) {
+	case *types.Pointer, *types.Slice, *types.Map, *types.Chan, *types.Signature, *types.Interface:
+		return ast.NewIdent("nil")
+
+	case *types.Basic:
+		info := t.Info()
+		switch {
+		case info&types.IsString != 0:
+			return &ast.BasicLit{Kind: token.STRING, Value: `""`}
+		case info&types.IsInteger != 0:
+			return &ast.BasicLit{Kind: token.INT, Value: "0"}
+		case info&types.IsFloat != 0:
+			return &ast.BasicLit{Kind: token.FLOAT, Value: "0"}
+		case info&types.IsBoolean != 0:
+			return ast.NewIdent("false")
+		case info&types.IsComplex != 0:
+			return &ast.BasicLit{Kind: token.INT, Value: "0"}
+		}
+
+	case *types.Struct:
+		return &ast.CompositeLit{Type: typeToASTExpr(typ, currentPkg)}
+
+	case *types.Array:
+		return &ast.CompositeLit{Type: typeToASTExpr(typ, currentPkg)}
+
+	default:
+		_ = t
+	}
+
+	return ast.NewIdent("nil")
+}
+
+// zeroValueFromASTType infers a zero-value expression from the AST type node
+// when full type resolution is unavailable.
+func zeroValueFromASTType(typeExpr ast.Expr) ast.Expr {
+	switch t := typeExpr.(type) {
+	case *ast.StarExpr:
+		return ast.NewIdent("nil")
+	case *ast.ArrayType:
+		if t.Len == nil {
+			return ast.NewIdent("nil") // slice
+		}
+		return &ast.CompositeLit{Type: t}
+	case *ast.MapType:
+		return ast.NewIdent("nil")
+	case *ast.ChanType:
+		return ast.NewIdent("nil")
+	case *ast.InterfaceType:
+		return ast.NewIdent("nil")
+	case *ast.FuncType:
+		return ast.NewIdent("nil")
+	case *ast.Ident:
+		switch t.Name {
+		case "string":
+			return &ast.BasicLit{Kind: token.STRING, Value: `""`}
+		case "bool":
+			return ast.NewIdent("false")
+		case "int", "int8", "int16", "int32", "int64",
+			"uint", "uint8", "uint16", "uint32", "uint64",
+			"byte", "rune", "uintptr":
+			return &ast.BasicLit{Kind: token.INT, Value: "0"}
+		case "float32", "float64":
+			return &ast.BasicLit{Kind: token.FLOAT, Value: "0"}
+		case "complex64", "complex128":
+			return &ast.BasicLit{Kind: token.INT, Value: "0"}
+		case "error":
+			return ast.NewIdent("nil")
+		}
+	case *ast.SelectorExpr:
+		return ast.NewIdent("nil")
+	}
+	return ast.NewIdent("nil")
 }
