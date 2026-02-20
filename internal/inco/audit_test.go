@@ -11,7 +11,7 @@ import (
 func TestAudit_BasicCounts(t *testing.T) {
 	dir := t.TempDir()
 
-	// File with @require, @must, @ensure and native if.
+	// File with @require, @must, @expect, @ensure and native if.
 	writeFile(t, filepath.Join(dir, "main.go"), `package main
 
 import "fmt"
@@ -40,9 +40,15 @@ func UseMust(db *DB) {
 	}
 }
 
-func UseEnsure() {
+func UseExpect() {
 	m := map[string]int{"a": 1}
-	_, _ = m["a"] // @ensure
+	_, _ = m["a"] // @expect
+}
+
+func UseEnsure(x int) int {
+	// @ensure result > 0
+	result := x * 2
+	return result
 }
 `)
 
@@ -52,8 +58,8 @@ func UseEnsure() {
 	if result.TotalFiles != 1 {
 		t.Errorf("TotalFiles = %d, want 1", result.TotalFiles)
 	}
-	if result.TotalFuncs != 5 { // Guarded, Unguarded, Query, UseMust, UseEnsure
-		t.Errorf("TotalFuncs = %d, want 5", result.TotalFuncs)
+	if result.TotalFuncs != 6 { // Guarded, Unguarded, Query, UseMust, UseExpect, UseEnsure
+		t.Errorf("TotalFuncs = %d, want 6", result.TotalFuncs)
 	}
 	if result.GuardedFuncs != 1 { // only Guarded
 		t.Errorf("GuardedFuncs = %d, want 1", result.GuardedFuncs)
@@ -64,11 +70,14 @@ func UseEnsure() {
 	if result.TotalMusts != 1 {
 		t.Errorf("TotalMusts = %d, want 1", result.TotalMusts)
 	}
+	if result.TotalExpects != 1 {
+		t.Errorf("TotalExpects = %d, want 1", result.TotalExpects)
+	}
 	if result.TotalEnsures != 1 {
 		t.Errorf("TotalEnsures = %d, want 1", result.TotalEnsures)
 	}
-	if result.TotalDirectives != 4 {
-		t.Errorf("TotalDirectives = %d, want 4", result.TotalDirectives)
+	if result.TotalDirectives != 5 {
+		t.Errorf("TotalDirectives = %d, want 5", result.TotalDirectives)
 	}
 	if result.TotalIfs != 3 { // x>10, y<0, true
 		t.Errorf("TotalIfs = %d, want 3", result.TotalIfs)
@@ -234,12 +243,13 @@ func TestAudit_PrintReport(t *testing.T) {
 		TotalIfs:        10,
 		TotalRequires:   4,
 		TotalMusts:      2,
+		TotalExpects:    1,
 		TotalEnsures:    1,
-		TotalDirectives: 7,
+		TotalDirectives: 8,
 		Files: []FileAudit{
-			{RelPath: "a.go", RequireCount: 3, MustCount: 1, EnsureCount: 0, IfCount: 6,
+			{RelPath: "a.go", RequireCount: 3, MustCount: 1, ExpectCount: 0, IfCount: 6,
 				Funcs: []FuncAudit{{Name: "A", Line: 3, RequireCount: 2}, {Name: "B", Line: 8, RequireCount: 1}}},
-			{RelPath: "b.go", RequireCount: 1, MustCount: 1, EnsureCount: 1, IfCount: 4,
+			{RelPath: "b.go", RequireCount: 1, MustCount: 1, ExpectCount: 1, IfCount: 4,
 				Funcs: []FuncAudit{{Name: "C", Line: 3, RequireCount: 0}, {Name: "D", Line: 8, RequireCount: 0}, {Name: "E", Line: 13, RequireCount: 1}}},
 		},
 	}
@@ -257,10 +267,11 @@ func TestAudit_PrintReport(t *testing.T) {
 		"Directive vs if:",
 		"@require:",
 		"@must:",
+		"@expect:",
 		"@ensure:",
 		"Total directives:",
 		"Native if stmts:",
-		"0.70",
+		"0.80",
 		"Per-file breakdown:",
 		"a.go",
 		"b.go",

@@ -17,13 +17,14 @@ In an Inco codebase, `if` should express **logic flow** — branching on busines
 - **Nil guards** → `// @require ptr != nil`
 - **Value validation** → `// @require x > 0`
 - **Error checks** → `// @must`
-- **Boolean checks** → `// @ensure`
+- **Boolean checks** → `// @expect`
+- **Postconditions** → `// @ensure`
 
 When every defensive check is a directive, the remaining `if` statements carry **real** semantic weight — genuine decisions, not boilerplate.
 
 ## Directives
 
-Three directive types, one action: **panic**.
+Four directive types, one action: **panic**.
 
 ```go
 func Transfer(from *Account, to *Account, amount int) {
@@ -33,7 +34,18 @@ func Transfer(from *Account, to *Account, amount int) {
 
     res, _ := db.Exec(query) // @must
 
-    v, _ := cache[key] // @ensure panic("key not found: " + key)
+    v, _ := cache[key] // @expect panic("key not found: " + key)
+}
+```
+
+```go
+func Abs(x int) int {
+    // @ensure result >= 0
+    result := x
+    if x < 0 {
+        result = -x
+    }
+    return result
 }
 ```
 
@@ -43,8 +55,10 @@ func Transfer(from *Account, to *Account, amount int) {
 | `// @require <expr> panic("msg")` | standalone | Precondition with custom panic message |
 | `// @must` | inline | Error check: captured `error` must be nil, else panic |
 | `// @must panic("msg")` | inline | Error check with custom panic message |
-| `// @ensure` | inline | Bool check: captured `bool` must be true, else panic |
-| `// @ensure panic("msg")` | inline | Bool check with custom panic message |
+| `// @expect` | inline | Bool check: captured `bool` must be true, else panic |
+| `// @expect panic("msg")` | inline | Bool check with custom panic message |
+| `// @ensure <expr>` | standalone | Postcondition: checked via `defer` at function exit |
+| `// @ensure <expr> panic("msg")` | standalone | Postcondition with custom panic message |
 
 ### Generated Output
 
@@ -127,12 +141,12 @@ if __inco_err != nil {
 }
 ```
 
-## `@ensure` — Boolean Assertions
+## `@expect` — Boolean Assertions
 
 Inline on a line with a comma-ok pattern. Replaces the last `_` with a generated bool variable, then asserts it is true.
 
 ```go
-v, _ := m[key] // @ensure panic("key not found: " + key)
+v, _ := m[key] // @expect panic("key not found: " + key)
 ```
 
 Generated:
@@ -141,6 +155,50 @@ Generated:
 v, __inco_ok := m[key]
 if !__inco_ok {
     panic("key not found: " + key)
+}
+```
+
+## `@ensure` — Postconditions (Design by Contract)
+
+Standalone comment, same syntax as `@require`, but wraps the check in `defer` so it runs when the function returns. Use it to assert invariants on return values.
+
+```go
+func Abs(x int) int {
+    // @ensure result >= 0
+    result := x
+    if x < 0 {
+        result = -x
+    }
+    return result
+}
+```
+
+Generated:
+
+```go
+func Abs(x int) int {
+    defer func() {
+        if !(result >= 0) {
+            panic("ensure violation: result >= 0 (at abs.go:2)")
+        }
+    }()
+    result := x
+    if x < 0 {
+        result = -x
+    }
+    return result
+}
+```
+
+With `@require` + `@ensure` together (full DbC):
+
+```go
+func SafeSlice(s []int, start, end int) []int {
+    // @require start >= 0
+    // @require end <= len(s)
+    // @ensure len(result) == end-start
+    result := s[start:end]
+    return result
 }
 ```
 
@@ -165,7 +223,7 @@ type Repository[T any] struct {
 }
 
 func (r *Repository[T]) Get(id string) T {
-    v, _ := r.data[id] // @ensure panic("not found: " + id)
+    v, _ := r.data[id] // @expect panic("not found: " + id)
     return v
 }
 
@@ -219,7 +277,7 @@ make install    # Install to $GOPATH/bin
 `inco audit` scans your codebase and reports:
 
 - **@require coverage**: percentage of functions guarded by at least one `@require`
-- **Directive vs if ratio**: total `@require` / `@must` / `@ensure` directives compared to native `if` statements
+- **Directive vs if ratio**: total `@require` / `@must` / `@expect` / `@ensure` directives compared to native `if` statements
 - **Per-file breakdown**: directive and `if` counts per file
 - **Unguarded functions**: list of functions without any `@require`
 
@@ -238,14 +296,15 @@ inco audit — contract coverage report
 Directive vs if:
   @require:           18
   @must:              4
-  @ensure:            3
+  @expect:            3
+  @ensure:            2
   ─────────────────────
   Total directives:   25
   Native if stmts:    122
   Directive/if ratio: 0.20
 
 Per-file breakdown:
-  File                        @require  @must  @ensure  if  funcs  guarded
+  File                        @require  @must  @expect  @ensure  if  funcs  guarded
   ──────────────────────────  ────────  ─────  ───────  ──  ─────  ───────
   example/demo.go                   5      1        0   0      4        3
   example/edge_cases.go             6      1        1   0      5        3
@@ -262,8 +321,8 @@ The goal: drive `@require` coverage up and the directive/if ratio toward 1.0+, m
 
 ## How It Works
 
-1. `inco gen` scans all `.go` files for `@require`, `@must`, `@ensure` comments
-2. Parses directives and generates shadow files with injected `if`/`panic` blocks in `.inco_cache/`
+1. `inco gen` scans all `.go` files for `@require`, `@must`, `@expect`, `@ensure` comments
+2. Parses directives and generates shadow files with injected `if`/`panic`/`defer` blocks in `.inco_cache/`
 3. Injects `//line` directives so panic stack traces point back to **original** source lines
 4. Produces `overlay.json` for `go build -overlay`
 5. Source files remain untouched — zero invasion
@@ -274,12 +333,12 @@ The goal: drive `@require` coverage up and the directive/if ratio toward 1.0+, m
 cmd/inco/           CLI: gen, build, test, run, audit, clean
 internal/inco/      Core engine:
   audit.go            Contract coverage auditing
-  directive.go        Directive parsing (@require, @must, @ensure)
+  directive.go        Directive parsing (@require, @must, @expect, @ensure)
   engine.go           AST processing, code generation, overlay I/O
 example/            Demo files:
   demo.go             @require + @must basics
   transfer.go         Multiple @require, @must
-  edge_cases.go       Closures, custom panic, @ensure
+  edge_cases.go       Closures, custom panic, @expect, @ensure
   generics.go         Type parameters, generic containers
 ```
 

@@ -33,17 +33,17 @@ func MultiCheck(a, b int, name string) {
 	fmt.Println(a, b, name)
 }
 
-// --- Case 4: @ensure for map lookup ---
+// --- Case 4: @expect for map lookup ---
 
 func LookupKey(m map[string]int, key string) int {
-	v, _ := m[key] // @ensure panic("key not found: " + key)
+	v, _ := m[key] // @expect panic("key not found: " + key)
 	return v
 }
 
-// --- Case 5: @ensure for type assertion ---
+// --- Case 5: @expect for type assertion ---
 
 func MustString(x any) string {
-	v, _ := x.(string) // @ensure panic("not a string")
+	v, _ := x.(string) // @expect panic("not a string")
 	return v
 }
 
@@ -55,11 +55,11 @@ func MultiMust(db *DB) {
 	fmt.Println(u1, u2)
 }
 
-// --- Case 7: Mixed @must + @ensure in same function ---
+// --- Case 7: Mixed @must + @expect in same function ---
 
 func MixedDirectives(db *DB, m map[string]int) {
 	user, _ := db.Query("q") // @must
-	count, _ := m[user.Name] // @ensure panic("user not in map")
+	count, _ := m[user.Name] // @expect panic("user not in map")
 	fmt.Println(count)
 }
 
@@ -86,4 +86,25 @@ func SingleValueMust() {
 func UnderscoreInName(db *DB) {
 	my_user, _ := db.Query("q") // @must
 	fmt.Println(my_user)
+}
+
+// --- Case 11: @ensure — postcondition via defer ---
+
+func Abs(x int) int {
+	// @ensure result >= 0 panic("absolute value must be non-negative")
+	result := x
+	if x < 0 {
+		result = -x
+	}
+	return result
+}
+
+// --- Case 12: @ensure + @require in same function ---
+
+func SafeSlice(s []int, start, end int) []int {
+	// @require start >= 0
+	// @require end <= len(s)
+	// @ensure len(result) == end-start
+	result := s[start:end]
+	return result
 }

@@ -103,27 +103,27 @@ func TestParseDirective_MustPanicMsg(t *testing.T) {
 	}
 }
 
-// --- @ensure tests ---
+// --- @expect tests ---
 
-func TestParseDirective_EnsureBare(t *testing.T) {
-	d := ParseDirective("// @ensure")
+func TestParseDirective_ExpectBare(t *testing.T) {
+	d := ParseDirective("// @expect")
 	if d == nil {
 		t.Fatal("nil")
 	}
-	if d.Kind != KindEnsure {
-		t.Errorf("Kind = %v, want Ensure", d.Kind)
+	if d.Kind != KindExpect {
+		t.Errorf("Kind = %v, want Expect", d.Kind)
 	}
 	if d.Action != ActionPanic {
 		t.Errorf("Action = %v, want Panic", d.Action)
 	}
 }
 
-func TestParseDirective_EnsurePanicMsg(t *testing.T) {
-	d := ParseDirective(`// @ensure panic("key missing")`)
+func TestParseDirective_ExpectPanicMsg(t *testing.T) {
+	d := ParseDirective(`// @expect panic("key missing")`)
 	if d == nil {
 		t.Fatal("nil")
 	}
-	if d.Kind != KindEnsure {
+	if d.Kind != KindExpect {
 		t.Errorf("Kind = %v", d.Kind)
 	}
 	if d.Action != ActionPanic {
@@ -186,5 +186,47 @@ func TestActionKindString(t *testing.T) {
 		if got := tt.k.String(); got != tt.want {
 			t.Errorf("ActionKind(%d).String() = %q, want %q", tt.k, got, tt.want)
 		}
+	}
+}
+
+// --- @ensure tests ---
+
+func TestParseDirective_EnsureBare(t *testing.T) {
+	d := ParseDirective("// @ensure len(result) > 0")
+	if d == nil {
+		t.Fatal("nil")
+	}
+	if d.Kind != KindEnsure {
+		t.Errorf("Kind = %v, want Ensure", d.Kind)
+	}
+	if d.Expr != "len(result) > 0" {
+		t.Errorf("Expr = %q", d.Expr)
+	}
+	if d.Action != ActionPanic {
+		t.Errorf("Action = %v, want Panic", d.Action)
+	}
+}
+
+func TestParseDirective_EnsurePanicMsg(t *testing.T) {
+	d := ParseDirective(`// @ensure result != nil panic("postcondition failed")`)
+	if d == nil {
+		t.Fatal("nil")
+	}
+	if d.Kind != KindEnsure {
+		t.Errorf("Kind = %v", d.Kind)
+	}
+	if d.Expr != "result != nil" {
+		t.Errorf("Expr = %q", d.Expr)
+	}
+	if len(d.ActionArgs) != 1 || d.ActionArgs[0] != `"postcondition failed"` {
+		t.Errorf("ActionArgs = %v", d.ActionArgs)
+	}
+}
+
+func TestParseDirective_EnsureNoExpr(t *testing.T) {
+	// @ensure with no expression is invalid
+	d := ParseDirective("// @ensure")
+	if d != nil {
+		t.Errorf("expected nil for bare @ensure, got %+v", d)
 	}
 }

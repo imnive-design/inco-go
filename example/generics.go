@@ -20,14 +20,14 @@ func Clamp[N Number](val, lo, hi N) N {
 	return val
 }
 
-// --- Case 2: Generic container with @ensure ---
+// --- Case 2: Generic container with @expect ---
 
 type Repository[T any] struct {
 	data map[string]T
 }
 
 func (r *Repository[T]) Get(id string) T {
-	v, _ := r.data[id] // @ensure panic("not found: " + id)
+	v, _ := r.data[id] // @expect panic("not found: " + id)
 	return v
 }
 

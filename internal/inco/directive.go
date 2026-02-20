@@ -1,79 +1,12 @@
-// Package inco implements a compile-time code injection engine.
-//
-// Directives:
-//
-//	// @require <expression> [panic[("msg")]]
-//	result, _ := foo() // @must [panic[("msg")]]
-//	v, _ := m[k]       // @ensure [panic[("msg")]]
-//
-// The only action is panic (the default).
-// Use panic("custom message") to customise the message.
 package inco
 
 import "strings"
-
-// ---------------------------------------------------------------------------
-// Action
-// ---------------------------------------------------------------------------
-
-// ActionKind identifies the response to a require violation.
-type ActionKind int
-
-const (
-	ActionPanic ActionKind = iota // default — only action
-)
-
-func (k ActionKind) String() string {
-	switch k {
-	case ActionPanic:
-		return "panic"
-	default:
-		return "unknown"
-	}
-}
-
-// ---------------------------------------------------------------------------
-// DirectiveKind
-// ---------------------------------------------------------------------------
-
-// DirectiveKind distinguishes the three directive types.
-type DirectiveKind int
-
-const (
-	KindRequire DirectiveKind = iota // standalone: @require <expr>
-	KindMust                         // inline: error check
-	KindEnsure                       // inline: ok/bool check
-)
-
-func (k DirectiveKind) String() string {
-	switch k {
-	case KindRequire:
-		return "require"
-	case KindMust:
-		return "must"
-	case KindEnsure:
-		return "ensure"
-	default:
-		return "unknown"
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Directive
-// ---------------------------------------------------------------------------
-
-// Directive is the parsed form of a single @require / @must / @ensure comment.
-type Directive struct {
-	Kind       DirectiveKind // require, must, or ensure
-	Action     ActionKind    // always ActionPanic
-	ActionArgs []string      // e.g. panic("msg") → ['"msg"']
-	Expr       string        // the Go boolean expression (@require only)
-}
 
 // keywords maps directive prefixes to their DirectiveKind.
 var keywords = map[string]DirectiveKind{
 	"@require": KindRequire,
 	"@must":    KindMust,
+	"@expect":  KindExpect,
 	"@ensure":  KindEnsure,
 }
 
@@ -111,7 +44,8 @@ func ParseDirective(comment string) *Directive {
 var kindParsers = map[DirectiveKind]func(d *Directive, rest string) *Directive{
 	KindRequire: parseRequireRest,
 	KindMust:    parseInlineRest,
-	KindEnsure:  parseInlineRest,
+	KindExpect:  parseInlineRest,
+	KindEnsure:  parseRequireRest,
 }
 
 func parseRequireRest(d *Directive, rest string) *Directive {

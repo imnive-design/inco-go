@@ -31,7 +31,8 @@ type FileAudit struct {
 	IfCount      int         // native if statements
 	RequireCount int         // require directives
 	MustCount    int         // must directives
-	EnsureCount  int         // ensure directives
+	ExpectCount  int         // expect directives
+	EnsureCount  int         // ensure directives (defer)
 }
 
 // AuditResult is the aggregate report.
@@ -43,6 +44,7 @@ type AuditResult struct {
 	TotalIfs        int
 	TotalRequires   int
 	TotalMusts      int
+	TotalExpects    int
 	TotalEnsures    int
 	TotalDirectives int
 }
@@ -54,6 +56,7 @@ type AuditResult struct {
 // Audit scans all Go source files under root and produces an AuditResult
 // summarising @require coverage and directive-vs-if ratios.
 func Audit(root string) *AuditResult {
+	// @require root != "" panic("Audit: root must not be empty")
 	absRoot, _ := filepath.Abs(root) // @must
 
 	fset := token.NewFileSet()
@@ -86,6 +89,7 @@ func Audit(root string) *AuditResult {
 		r.TotalIfs += f.IfCount
 		r.TotalRequires += f.RequireCount
 		r.TotalMusts += f.MustCount
+		r.TotalExpects += f.ExpectCount
 		r.TotalEnsures += f.EnsureCount
 		for _, fn := range f.Funcs {
 			r.TotalFuncs++
@@ -94,7 +98,7 @@ func Audit(root string) *AuditResult {
 			}
 		}
 	}
-	r.TotalDirectives = r.TotalRequires + r.TotalMusts + r.TotalEnsures
+	r.TotalDirectives = r.TotalRequires + r.TotalMusts + r.TotalExpects + r.TotalEnsures
 	return r
 }
 
@@ -129,7 +133,7 @@ func auditFile(fset *token.FileSet, root, path string) FileAudit {
 			if d == nil {
 				continue
 			}
-			// Classify: same as engine — standalone @require vs inline @must/@ensure.
+			// Classify: same as engine — standalone @require/@ensure vs inline @must/@expect.
 			line := fset.Position(c.Pos()).Line
 			if line < 1 || line > len(srcLines) {
 				continue
@@ -143,13 +147,17 @@ func auditFile(fset *token.FileSet, root, path string) FileAudit {
 					fa.RequireCount++
 					directives = append(directives, directiveInfo{kind: KindRequire, pos: c.Pos()})
 				}
+			case KindEnsure:
+				if isStandalone {
+					fa.EnsureCount++
+				}
 			case KindMust:
 				if !isStandalone {
 					fa.MustCount++
 				}
-			case KindEnsure:
+			case KindExpect:
 				if !isStandalone {
-					fa.EnsureCount++
+					fa.ExpectCount++
 				}
 			}
 		}
@@ -273,6 +281,7 @@ func (r *AuditResult) PrintReport(w io.Writer) {
 	fmt.Fprintf(w, "Directive vs if:\n")
 	fmt.Fprintf(w, "  @require:           %d\n", r.TotalRequires)
 	fmt.Fprintf(w, "  @must:              %d\n", r.TotalMusts)
+	fmt.Fprintf(w, "  @expect:            %d\n", r.TotalExpects)
 	fmt.Fprintf(w, "  @ensure:            %d\n", r.TotalEnsures)
 	fmt.Fprintf(w, "  ─────────────────────\n")
 	fmt.Fprintf(w, "  Total directives:   %d\n", r.TotalDirectives)
@@ -299,8 +308,8 @@ func (r *AuditResult) PrintReport(w io.Writer) {
 		maxPath = 50
 	}
 
-	fmt.Fprintf(w, "  %-*s  @require  @must  @ensure  if  funcs  guarded\n", maxPath, "File")
-	fmt.Fprintf(w, "  %s  %s\n", strings.Repeat("─", maxPath), "────────  ─────  ───────  ──  ─────  ───────")
+	fmt.Fprintf(w, "  %-*s  @require  @must  @expect  @ensure  if  funcs  guarded\n", maxPath, "File")
+	fmt.Fprintf(w, "  %s  %s\n", strings.Repeat("─", maxPath), "────────  ─────  ───────  ───────  ──  ─────  ───────")
 	for _, f := range r.Files {
 		guarded := 0
 		for _, fn := range f.Funcs {
@@ -312,8 +321,8 @@ func (r *AuditResult) PrintReport(w io.Writer) {
 		if len(display) > maxPath {
 			display = "…" + display[len(display)-maxPath+1:]
 		}
-		fmt.Fprintf(w, "  %-*s  %7d  %5d  %7d  %2d  %5d  %7d\n",
-			maxPath, display, f.RequireCount, f.MustCount, f.EnsureCount,
+		fmt.Fprintf(w, "  %-*s  %7d  %5d  %7d  %7d  %2d  %5d  %7d\n",
+			maxPath, display, f.RequireCount, f.MustCount, f.ExpectCount, f.EnsureCount,
 			f.IfCount, len(f.Funcs), guarded)
 	}
 

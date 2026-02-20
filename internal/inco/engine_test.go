@@ -364,16 +364,16 @@ func Run() {
 }
 
 // ---------------------------------------------------------------------------
-// @ensure tests
+// @expect tests
 // ---------------------------------------------------------------------------
 
-func TestEngine_Ensure_DefaultPanic(t *testing.T) {
+func TestEngine_Expect_DefaultPanic(t *testing.T) {
 	dir := setupDir(t, map[string]string{
 		"main.go": `package main
 
 func Run() {
 	m := map[string]int{"a": 1}
-	v, _ := m["a"] // @ensure
+	v, _ := m["a"] // @expect
 	_ = v
 }
 `,
@@ -387,18 +387,18 @@ func Run() {
 	if !strings.Contains(shadow, "!__inco_ok") {
 		t.Errorf("should contain !__inco_ok, got:\n%s", shadow)
 	}
-	if !strings.Contains(shadow, "ensure violation") {
-		t.Errorf("should contain ensure violation message, got:\n%s", shadow)
+	if !strings.Contains(shadow, "expect violation") {
+		t.Errorf("should contain expect violation message, got:\n%s", shadow)
 	}
 }
 
-func TestEngine_Ensure_Panic(t *testing.T) {
+func TestEngine_Expect_Panic(t *testing.T) {
 	dir := setupDir(t, map[string]string{
 		"main.go": `package main
 
 func Run() {
 	m := map[string]int{"a": 1}
-	v, _ := m["a"] // @ensure panic("key not found")
+	v, _ := m["a"] // @expect panic("key not found")
 	_ = v
 }
 `,
@@ -496,8 +496,8 @@ func Run() {
 	}
 }
 
-// Mixed @must + @ensure in same function — separate variables, both get :=
-func TestEngine_MixedMustEnsure(t *testing.T) {
+// Mixed @must + @expect in same function — separate variables, both get :=
+func TestEngine_MixedMustExpect(t *testing.T) {
 	dir := setupDir(t, map[string]string{
 		"main.go": `package main
 
@@ -506,7 +506,7 @@ import "fmt"
 func Run() {
 	_, _ = fmt.Println("hello") // @must
 	m := map[string]int{"a": 1}
-	v, _ := m["a"] // @ensure
+	v, _ := m["a"] // @expect
 	_ = v
 }
 `,
@@ -552,15 +552,15 @@ func Run() {
 	}
 }
 
-// @ensure for type assertion
-func TestEngine_Ensure_TypeAssertion(t *testing.T) {
+// @expect for type assertion
+func TestEngine_Expect_TypeAssertion(t *testing.T) {
 	dir := setupDir(t, map[string]string{
 		"main.go": `package main
 
 import "fmt"
 
 func MustString(x any) string {
-	v, _ := x.(string) // @ensure panic("not a string")
+	v, _ := x.(string) // @expect panic("not a string")
 	return v
 }
 
@@ -630,14 +630,14 @@ func Run() {
 	}
 }
 
-// @must/@ensure comment on struct field — must NOT be processed
+// @must/@expect comment on struct field — must NOT be processed
 func TestEngine_DirectiveOnStructField_Ignored(t *testing.T) {
 	dir := setupDir(t, map[string]string{
 		"main.go": `package main
 
 type Config struct {
 	Name string // @must not be empty
-	Port int    // @ensure positive
+	Port int    // @expect positive
 }
 
 func main() {}
@@ -672,5 +672,84 @@ func Run() {
 	}
 	if !strings.Contains(shadow, "__inco_err") {
 		t.Errorf("should contain __inco_err, got:\n%s", shadow)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// @ensure tests (postcondition via defer)
+// ---------------------------------------------------------------------------
+
+func TestEngine_Ensure_DefaultPanic(t *testing.T) {
+	dir := setupDir(t, map[string]string{
+		"main.go": `package main
+
+func Compute(x int) int {
+	result := x * 2
+	// @ensure result > 0
+	return result
+}
+`,
+	})
+	e := NewEngine(dir)
+	e.Run()
+	shadow := readShadow(t, e)
+	if !strings.Contains(shadow, "defer func()") {
+		t.Errorf("should contain defer func(), got:\n%s", shadow)
+	}
+	if !strings.Contains(shadow, "!(result > 0)") {
+		t.Errorf("should contain negated condition, got:\n%s", shadow)
+	}
+	if !strings.Contains(shadow, "ensure violation") {
+		t.Errorf("should contain ensure violation message, got:\n%s", shadow)
+	}
+}
+
+func TestEngine_Ensure_CustomPanic(t *testing.T) {
+	dir := setupDir(t, map[string]string{
+		"main.go": `package main
+
+func SafeDiv(a, b int) int {
+	// @ensure result >= 0 panic("negative result")
+	result := a / b
+	return result
+}
+`,
+	})
+	e := NewEngine(dir)
+	e.Run()
+	shadow := readShadow(t, e)
+	if !strings.Contains(shadow, "defer func()") {
+		t.Errorf("should contain defer func(), got:\n%s", shadow)
+	}
+	if !strings.Contains(shadow, `panic("negative result")`) {
+		t.Errorf("should contain custom panic message, got:\n%s", shadow)
+	}
+}
+
+func TestEngine_Ensure_WithRequire(t *testing.T) {
+	// @ensure and @require in same function
+	dir := setupDir(t, map[string]string{
+		"main.go": `package main
+
+func Transform(s string) string {
+	// @require len(s) > 0
+	// @ensure len(result) > 0
+	result := "[" + s + "]"
+	return result
+}
+`,
+	})
+	e := NewEngine(dir)
+	e.Run()
+	shadow := readShadow(t, e)
+	// Should have both if (require) and defer (ensure)
+	if !strings.Contains(shadow, "if !(len(s) > 0)") {
+		t.Errorf("should contain require if-block, got:\n%s", shadow)
+	}
+	if !strings.Contains(shadow, "defer func()") {
+		t.Errorf("should contain ensure defer-block, got:\n%s", shadow)
+	}
+	if !strings.Contains(shadow, "!(len(result) > 0)") {
+		t.Errorf("should contain ensure condition, got:\n%s", shadow)
 	}
 }

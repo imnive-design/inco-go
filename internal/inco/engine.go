@@ -21,11 +21,6 @@ import (
 // Public types
 // ---------------------------------------------------------------------------
 
-// Overlay is the JSON structure consumed by `go build -overlay`.
-type Overlay struct {
-	Replace map[string]string `json:"Replace"`
-}
-
 // Engine scans Go source files for @require directives and produces an
 // overlay that injects the corresponding if-statements at compile time.
 type Engine struct {
@@ -36,6 +31,7 @@ type Engine struct {
 
 // NewEngine creates an engine rooted at the given directory.
 func NewEngine(root string) *Engine {
+	// @require root != "" panic("NewEngine: root must not be empty")
 	return &Engine{
 		Root:    root,
 		Overlay: Overlay{Replace: make(map[string]string)},
@@ -50,6 +46,8 @@ func NewEngine(root string) *Engine {
 // Run scans all Go source files under Root, processes @require directives,
 // and writes the overlay + shadow files into .inco_cache/.
 func (e *Engine) Run() {
+	// @require e != nil panic("Run: nil engine")
+	// @require e.Root != "" panic("Run: root must not be empty")
 	packages := e.scanPackages()
 	for _, pkg := range packages {
 		e.processPackage(pkg)
@@ -126,6 +124,7 @@ func (e *Engine) scanPackages() []*pkgBundle {
 // ---------------------------------------------------------------------------
 
 func (e *Engine) processPackage(pkg *pkgBundle) {
+	// @require pkg != nil
 	for _, path := range pkg.Paths {
 		e.processFile(path, pkg.Files[path])
 	}
@@ -134,6 +133,8 @@ func (e *Engine) processPackage(pkg *pkgBundle) {
 // processFile scans a single source file for directives,
 // generates injected if-blocks via text replacement, and writes a shadow.
 func (e *Engine) processFile(path string, f *ast.File) {
+	// @require path != "" panic("processFile: empty path")
+	// @require f != nil panic("processFile: nil AST")
 	// 1. Collect directive lines from AST comments.
 	directives := make(map[int]*Directive) // 1-based line → Directive
 	for _, cg := range f.Comments {
@@ -153,7 +154,7 @@ func (e *Engine) processFile(path string, f *ast.File) {
 	src, _ := os.ReadFile(path) // @must
 	lines := strings.Split(string(src), "\n")
 
-	// 3. Classify directives: standalone (@require) vs inline (@must/@ensure).
+	// 3. Classify directives: standalone (@require/@ensure) vs inline (@must/@expect).
 	standalone := make(map[int]*Directive)
 	inline := make(map[int]*Directive)
 
@@ -166,11 +167,11 @@ func (e *Engine) processFile(path string, f *ast.File) {
 		isStandaloneLine := strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "/*")
 
 		switch d.Kind {
-		case KindRequire:
+		case KindRequire, KindEnsure:
 			if isStandaloneLine {
 				standalone[lineNum] = d
 			}
-		case KindMust, KindEnsure:
+		case KindMust, KindExpect:
 			if !isStandaloneLine {
 				inline[lineNum] = d
 			}
@@ -222,10 +223,14 @@ func (e *Engine) processFile(path string, f *ast.File) {
 		lineNum := idx + 1
 
 		if d, ok := standalone[lineNum]; ok {
-			// Standalone @require: replace comment line with if-block.
+			// Standalone @require/@ensure: replace comment line with if-block (or defer).
 			indent := extractIndent(line)
 			output = append(output, fmt.Sprintf("%s//line %s:%d", indent, path, lineNum))
-			output = append(output, e.generateIfBlock(d, indent, path, lineNum))
+			if d.Kind == KindEnsure {
+				output = append(output, e.generateDeferBlock(d, indent, path, lineNum))
+			} else {
+				output = append(output, e.generateIfBlock(d, indent, path, lineNum))
+			}
 			prevWasDirective = true
 		} else if d, ok := inline[lineNum]; ok {
 			// Reset declared map when crossing function boundaries.
@@ -233,7 +238,7 @@ func (e *Engine) processFile(path string, f *ast.File) {
 				declared = make(map[string]bool)
 				lastScope = scope
 			}
-			// Inline @must/@ensure: rewrite code line + inject if-block after.
+			// Inline @must/@expect: rewrite code line + inject if-block after.
 			indent := extractIndent(line)
 			varName, rewritten := e.rewriteInlineLine(line, d, declared)
 			output = append(output, fmt.Sprintf("%s//line %s:%d", indent, path, lineNum))
@@ -273,6 +278,19 @@ func (e *Engine) generateIfBlock(d *Directive, indent, path string, line int) st
 	return fmt.Sprintf("%sif %s {\n%s\t%s\n%s}", indent, cond, indent, body, indent)
 }
 
+// generateDeferBlock returns the text of the injected defer for @ensure.
+//
+//	defer func() {
+//	    if !(expr) {
+//	        panic(...)
+//	    }
+//	}()
+func (e *Engine) generateDeferBlock(d *Directive, indent, path string, line int) string {
+	cond := fmt.Sprintf("!(%s)", d.Expr)
+	body := e.buildEnsurePanicBody(d, path, line)
+	return fmt.Sprintf("%sdefer func() {\n%s\tif %s {\n%s\t\t%s\n%s\t}\n%s}()", indent, indent, cond, indent, body, indent, indent)
+}
+
 // buildPanicBody generates a panic statement.
 //
 //   - With ActionArgs  → panic(arg)
@@ -289,19 +307,35 @@ func (e *Engine) buildPanicBody(d *Directive, path string, line int) string {
 	return fmt.Sprintf("panic(%q)", msg)
 }
 
+// buildEnsurePanicBody generates a panic statement for @ensure.
+//
+//   - With ActionArgs  → panic(arg)
+//   - Default          → panic("ensure violation: <expr> (at file:line)")
+func (e *Engine) buildEnsurePanicBody(d *Directive, path string, line int) string {
+	if len(d.ActionArgs) > 0 {
+		return "panic(" + d.ActionArgs[0] + ")"
+	}
+	relPath := path
+	if rel, err := filepath.Rel(e.Root, path); err == nil {
+		relPath = rel
+	}
+	msg := fmt.Sprintf("ensure violation: %s (at %s:%d)", d.Expr, relPath, line)
+	return fmt.Sprintf("panic(%q)", msg)
+}
+
 // ---------------------------------------------------------------------------
-// Inline directive helpers (@must / @ensure)
+// Inline directive helpers (@must / @expect)
 // ---------------------------------------------------------------------------
 
-// rewriteInlineLine strips the inline @must/@ensure comment and replaces the
+// rewriteInlineLine strips the inline @must/@expect comment and replaces the
 // last blank identifier (_) with a generated variable name.
 // If the blank was assigned with plain "=" and the variable hasn't been
 // declared yet in this scope, the assignment is promoted to ":=".
 func (e *Engine) rewriteInlineLine(line string, d *Directive, declared map[string]bool) (varName, rewritten string) {
 	keyword := "@must"
 	varName = "__inco_err"
-	if d.Kind == KindEnsure {
-		keyword = "@ensure"
+	if d.Kind == KindExpect {
+		keyword = "@expect"
 		varName = "__inco_ok"
 	}
 	codePart := stripInlineComment(line, keyword)
@@ -341,21 +375,21 @@ func promoteAssign(code, varName string) string {
 	return code
 }
 
-// generateInlineIfBlock builds the if-block for an inline @must/@ensure.
+// inlineCondFmt maps DirectiveKind to the fmt pattern for the if-condition.
+var inlineCondFmt = map[DirectiveKind]string{
+	KindMust:   "%s != nil",
+	KindExpect: "!%s",
+}
+
+// generateInlineIfBlock builds the if-block for an inline @must/@expect.
 func (e *Engine) generateInlineIfBlock(d *Directive, indent, path string, line int, varName string) string {
-	var cond string
-	switch d.Kind {
-	case KindMust:
-		cond = varName + " != nil"
-	default: // KindEnsure
-		cond = "!" + varName
-	}
+	cond := fmt.Sprintf(inlineCondFmt[d.Kind], varName)
 	body := e.buildInlinePanicBody(d, path, line, varName)
 	return fmt.Sprintf("%sif %s {\n%s\t%s\n%s}", indent, cond, indent, body, indent)
 }
 
 // buildInlinePanicBody produces the panic statement inside the if-block for
-// @must / @ensure directives.
+// @must / @expect directives.
 func (e *Engine) buildInlinePanicBody(d *Directive, path string, line int, varName string) string {
 	if len(d.ActionArgs) > 0 {
 		return "panic(" + substituteBlank(d.ActionArgs[0], varName) + ")"
@@ -363,12 +397,12 @@ func (e *Engine) buildInlinePanicBody(d *Directive, path string, line int, varNa
 	if d.Kind == KindMust {
 		return "panic(" + varName + ")"
 	}
-	// KindEnsure — descriptive message.
+	// KindExpect — descriptive message.
 	relPath := path
 	if rel, err := filepath.Rel(e.Root, path); err == nil {
 		relPath = rel
 	}
-	return fmt.Sprintf("panic(%q)", fmt.Sprintf("ensure violation at %s:%d", relPath, line))
+	return fmt.Sprintf("panic(%q)", fmt.Sprintf("expect violation at %s:%d", relPath, line))
 }
 
 // stripInlineComment removes the inline directive comment from a code line.
