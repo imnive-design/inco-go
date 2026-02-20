@@ -1,0 +1,64 @@
+name: Release to inco-go
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Bootstrap build
+        run: make build
+
+      - name: Release
+        run: |
+          # Generate overlay and release .inco.go → .go (with guards)
+          bin/inco release .
+
+          # Rename remaining .inco.go files (those without directives) → .go
+          find . -name '*.inco.go' -not -path './.inco_cache/*' | while read -r f; do
+            target="${f%.inco.go}.go"
+            mv "$f" "$target"
+            echo "  renamed: $f → $target"
+          done
+
+          # Clean up backups and cache
+          find . -name '*.inco' -not -path './.inco_cache/*' -delete
+          rm -rf .inco_cache bin/
+
+      - name: Push to inco-go
+        env:
+          INCO_GO_TOKEN: ${{ secrets.INCO_GO_TOKEN }}
+        run: |
+          git clone "https://x-access-token:${INCO_GO_TOKEN}@github.com/incognito-design/inco-go.git" /tmp/inco-go
+
+          # Sync everything except .git
+          rsync -av --delete \
+            --exclude='.git' \
+            --exclude='.github' \
+            ./ /tmp/inco-go/
+
+          cd /tmp/inco-go
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "inco-go: no changes to push"
+          else
+            git commit -m "release: incognito-design/inco@${GITHUB_SHA::7}"
+            git push
+            echo "inco-go: pushed release"
+          fi
