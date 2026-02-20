@@ -10,6 +10,14 @@ var keywords = map[string]DirectiveKind{
 	"@ensure":  KindEnsure,
 }
 
+// actionKeywords maps action names to their ActionKind.
+var actionKeywords = map[string]ActionKind{
+	"panic":    ActionPanic,
+	"return":   ActionReturn,
+	"continue": ActionContinue,
+	"break":    ActionBreak,
+}
+
 // ParseDirective extracts a Directive from a comment string.
 // Returns nil when the comment is not a valid directive.
 func ParseDirective(comment string) *Directive {
@@ -53,24 +61,41 @@ func parseRequireRest(d *Directive, rest string) *Directive {
 		return nil // expression is mandatory
 	}
 
-	// Try "expr panic(args...)" — find rightmost " panic("
-	needle := " panic("
-	if idx := strings.LastIndex(rest, needle); idx >= 0 {
-		argStart := idx + len(" panic") // position of '('
-		args, remaining, ok := parseActionArgs(rest[argStart:])
-		if ok && strings.TrimSpace(remaining) == "" {
-			d.ActionArgs = args
-			d.Expr = strings.TrimSpace(rest[:idx])
-			if d.Expr == "" {
-				return nil
+	// Find the rightmost action keyword split across all known actions.
+	type actionMatch struct {
+		pos    int
+		action ActionKind
+		args   []string
+	}
+	var best *actionMatch
+
+	for keyword, action := range actionKeywords {
+		// Try "expr keyword(args...)" — find rightmost " keyword("
+		needle := " " + keyword + "("
+		if idx := strings.LastIndex(rest, needle); idx >= 0 {
+			argStart := idx + 1 + len(keyword) // position of '('
+			args, remaining, ok := parseActionArgs(rest[argStart:])
+			if ok && strings.TrimSpace(remaining) == "" {
+				if best == nil || idx > best.pos {
+					best = &actionMatch{pos: idx, action: action, args: args}
+				}
 			}
-			return d
+		}
+
+		// Try "expr keyword" — bare keyword at end
+		suffix := " " + keyword
+		if strings.HasSuffix(rest, suffix) {
+			idx := len(rest) - len(suffix)
+			if best == nil || idx > best.pos {
+				best = &actionMatch{pos: idx, action: action}
+			}
 		}
 	}
 
-	// Try "expr panic" — bare panic at end
-	if strings.HasSuffix(rest, " panic") {
-		d.Expr = strings.TrimSpace(rest[:len(rest)-len(" panic")])
+	if best != nil {
+		d.Action = best.action
+		d.ActionArgs = best.args
+		d.Expr = strings.TrimSpace(rest[:best.pos])
 		if d.Expr == "" {
 			return nil
 		}
@@ -86,21 +111,27 @@ func parseInlineRest(d *Directive, rest string) *Directive {
 	if rest == "" {
 		return d // bare → default panic
 	}
-	if !strings.HasPrefix(rest, "panic") {
-		return nil
-	}
-	after := rest[len("panic"):]
-	if len(after) > 0 && after[0] != ' ' && after[0] != '\t' && after[0] != '(' {
-		return nil
-	}
-	after = strings.TrimSpace(after)
-	if strings.HasPrefix(after, "(") {
-		args, _, ok := parseActionArgs(after)
-		if ok {
-			d.ActionArgs = args
+
+	for keyword, action := range actionKeywords {
+		if !strings.HasPrefix(rest, keyword) {
+			continue
 		}
+		after := rest[len(keyword):]
+		if len(after) > 0 && after[0] != ' ' && after[0] != '\t' && after[0] != '(' {
+			continue // not a full keyword match
+		}
+		d.Action = action
+		after = strings.TrimSpace(after)
+		if strings.HasPrefix(after, "(") {
+			args, _, ok := parseActionArgs(after)
+			if ok {
+				d.ActionArgs = args
+			}
+		}
+		return d
 	}
-	return d
+
+	return nil // unrecognized action
 }
 
 // ---------------------------------------------------------------------------

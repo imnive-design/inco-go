@@ -291,36 +291,61 @@ func (e *Engine) generateDeferBlock(d *Directive, indent, path string, line int)
 	return fmt.Sprintf("%sdefer func() {\n%s\tif %s {\n%s\t\t%s\n%s\t}\n%s}()", indent, indent, cond, indent, body, indent, indent)
 }
 
-// buildPanicBody generates a panic statement.
+// buildPanicBody generates the action statement for @require.
 //
-//   - With ActionArgs  → panic(arg)
-//   - Default          → panic("require violation: <expr> (at file:line)")
+//   - ActionReturn + args → return arg0, arg1, ...
+//   - ActionReturn bare   → return
+//   - ActionContinue      → continue
+//   - ActionBreak         → break
+//   - ActionPanic + args  → panic(arg)
+//   - ActionPanic default → panic("require violation: <expr> (at file:line)")
 func (e *Engine) buildPanicBody(d *Directive, path string, line int) string {
-	if len(d.ActionArgs) > 0 {
-		return "panic(" + d.ActionArgs[0] + ")"
+	switch d.Action {
+	case ActionReturn:
+		if len(d.ActionArgs) > 0 {
+			return "return " + strings.Join(d.ActionArgs, ", ")
+		}
+		return "return"
+	case ActionContinue:
+		return "continue"
+	case ActionBreak:
+		return "break"
+	default: // ActionPanic
+		if len(d.ActionArgs) > 0 {
+			return "panic(" + d.ActionArgs[0] + ")"
+		}
+		relPath := path
+		if rel, err := filepath.Rel(e.Root, path); err == nil {
+			relPath = rel
+		}
+		msg := fmt.Sprintf("require violation: %s (at %s:%d)", d.Expr, relPath, line)
+		return fmt.Sprintf("panic(%q)", msg)
 	}
-	relPath := path
-	if rel, err := filepath.Rel(e.Root, path); err == nil {
-		relPath = rel
-	}
-	msg := fmt.Sprintf("require violation: %s (at %s:%d)", d.Expr, relPath, line)
-	return fmt.Sprintf("panic(%q)", msg)
 }
 
-// buildEnsurePanicBody generates a panic statement for @ensure.
-//
-//   - With ActionArgs  → panic(arg)
-//   - Default          → panic("ensure violation: <expr> (at file:line)")
+// buildEnsurePanicBody generates the action statement for @ensure.
 func (e *Engine) buildEnsurePanicBody(d *Directive, path string, line int) string {
-	if len(d.ActionArgs) > 0 {
-		return "panic(" + d.ActionArgs[0] + ")"
+	switch d.Action {
+	case ActionReturn:
+		if len(d.ActionArgs) > 0 {
+			return "return " + strings.Join(d.ActionArgs, ", ")
+		}
+		return "return"
+	case ActionContinue:
+		return "continue"
+	case ActionBreak:
+		return "break"
+	default: // ActionPanic
+		if len(d.ActionArgs) > 0 {
+			return "panic(" + d.ActionArgs[0] + ")"
+		}
+		relPath := path
+		if rel, err := filepath.Rel(e.Root, path); err == nil {
+			relPath = rel
+		}
+		msg := fmt.Sprintf("ensure violation: %s (at %s:%d)", d.Expr, relPath, line)
+		return fmt.Sprintf("panic(%q)", msg)
 	}
-	relPath := path
-	if rel, err := filepath.Rel(e.Root, path); err == nil {
-		relPath = rel
-	}
-	msg := fmt.Sprintf("ensure violation: %s (at %s:%d)", d.Expr, relPath, line)
-	return fmt.Sprintf("panic(%q)", msg)
 }
 
 // ---------------------------------------------------------------------------
@@ -388,21 +413,37 @@ func (e *Engine) generateInlineIfBlock(d *Directive, indent, path string, line i
 	return fmt.Sprintf("%sif %s {\n%s\t%s\n%s}", indent, cond, indent, body, indent)
 }
 
-// buildInlinePanicBody produces the panic statement inside the if-block for
+// buildInlinePanicBody produces the action statement inside the if-block for
 // @must / @expect directives.
 func (e *Engine) buildInlinePanicBody(d *Directive, path string, line int, varName string) string {
-	if len(d.ActionArgs) > 0 {
-		return "panic(" + substituteBlank(d.ActionArgs[0], varName) + ")"
+	switch d.Action {
+	case ActionReturn:
+		if len(d.ActionArgs) > 0 {
+			args := make([]string, len(d.ActionArgs))
+			for i, a := range d.ActionArgs {
+				args[i] = substituteBlank(a, varName)
+			}
+			return "return " + strings.Join(args, ", ")
+		}
+		return "return"
+	case ActionContinue:
+		return "continue"
+	case ActionBreak:
+		return "break"
+	default: // ActionPanic
+		if len(d.ActionArgs) > 0 {
+			return "panic(" + substituteBlank(d.ActionArgs[0], varName) + ")"
+		}
+		if d.Kind == KindMust {
+			return "panic(" + varName + ")"
+		}
+		// KindExpect — descriptive message.
+		relPath := path
+		if rel, err := filepath.Rel(e.Root, path); err == nil {
+			relPath = rel
+		}
+		return fmt.Sprintf("panic(%q)", fmt.Sprintf("expect violation at %s:%d", relPath, line))
 	}
-	if d.Kind == KindMust {
-		return "panic(" + varName + ")"
-	}
-	// KindExpect — descriptive message.
-	relPath := path
-	if rel, err := filepath.Rel(e.Root, path); err == nil {
-		relPath = rel
-	}
-	return fmt.Sprintf("panic(%q)", fmt.Sprintf("expect violation at %s:%d", relPath, line))
 }
 
 // stripInlineComment removes the inline directive comment from a code line.

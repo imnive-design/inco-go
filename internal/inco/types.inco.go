@@ -2,13 +2,19 @@
 //
 // Directives:
 //
-//	// @require <expression> [panic[("msg")]]
-//	result, _ := foo() // @must [panic[("msg")]]
-//	v, _ := m[k]       // @expect [panic[("msg")]]
-//	// @ensure <expression> [panic[("msg")]]
+//	// @require <expression> [action]
+//	result, _ := foo() // @must [action]
+//	v, _ := m[k]       // @expect [action]
+//	// @ensure <expression> [action]
 //
-// The only action is panic (the default).
-// Use panic("custom message") to customise the message.
+// Actions:
+//
+//	panic            — panic with default message (default action)
+//	panic("msg")     — panic with custom message
+//	return           — bare return
+//	return(x, y)     — return with values
+//	continue         — continue enclosing loop
+//	break            — break enclosing loop
 package inco
 
 import "fmt"
@@ -17,15 +23,21 @@ import "fmt"
 // Action
 // ---------------------------------------------------------------------------
 
-// ActionKind identifies the response to a require violation.
+// ActionKind identifies the response to a directive violation.
 type ActionKind int
 
 const (
-	ActionPanic ActionKind = iota // default — only action
+	ActionPanic    ActionKind = iota // default — panic
+	ActionReturn                     // return (with optional values)
+	ActionContinue                   // continue enclosing loop
+	ActionBreak                      // break enclosing loop
 )
 
 var actionNames = map[ActionKind]string{
-	ActionPanic: "panic",
+	ActionPanic:    "panic",
+	ActionReturn:   "return",
+	ActionContinue: "continue",
+	ActionBreak:    "break",
 }
 
 func (k ActionKind) String() string {
@@ -70,8 +82,8 @@ func (k DirectiveKind) String() string {
 // Directive is the parsed form of a single @require / @must / @expect / @ensure comment.
 type Directive struct {
 	Kind       DirectiveKind // require, must, expect, or ensure
-	Action     ActionKind    // always ActionPanic
-	ActionArgs []string      // e.g. panic("msg") → ['"msg"']
+	Action     ActionKind    // panic (default), return, continue, break
+	ActionArgs []string      // e.g. panic("msg") → ['"msg"'], return(0, err) → ["0", "err"]
 	Expr       string        // the Go boolean expression (@require only)
 }
 

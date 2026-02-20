@@ -753,3 +753,221 @@ func Transform(s string) string {
 		t.Errorf("should contain ensure condition, got:\n%s", shadow)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// return action tests
+// ---------------------------------------------------------------------------
+
+func TestEngine_Require_Return(t *testing.T) {
+	dir := setupDir(t, map[string]string{
+		"main.go": `package main
+
+func Positive(x int) int {
+	// @require x > 0 return(-1)
+	return x * 2
+}
+`,
+	})
+	e := NewEngine(dir)
+	e.Run()
+	shadow := readShadow(t, e)
+	if !strings.Contains(shadow, "if !(x > 0)") {
+		t.Errorf("should contain negated condition, got:\n%s", shadow)
+	}
+	if !strings.Contains(shadow, "return -1") {
+		t.Errorf("should contain return -1, got:\n%s", shadow)
+	}
+}
+
+func TestEngine_Require_ReturnMultiValue(t *testing.T) {
+	dir := setupDir(t, map[string]string{
+		"main.go": `package main
+
+import "fmt"
+
+func Parse(s string) (int, error) {
+	// @require len(s) > 0 return(0, fmt.Errorf("empty"))
+	return len(s), nil
+}
+`,
+	})
+	e := NewEngine(dir)
+	e.Run()
+	shadow := readShadow(t, e)
+	if !strings.Contains(shadow, `return 0, fmt.Errorf("empty")`) {
+		t.Errorf("should contain multi-value return, got:\n%s", shadow)
+	}
+}
+
+func TestEngine_Require_ReturnBare(t *testing.T) {
+	dir := setupDir(t, map[string]string{
+		"main.go": `package main
+
+import "fmt"
+
+func Check(x int) {
+	// @require x > 0 return
+	fmt.Println(x)
+}
+`,
+	})
+	e := NewEngine(dir)
+	e.Run()
+	shadow := readShadow(t, e)
+	if !strings.Contains(shadow, "return\n") {
+		t.Errorf("should contain bare return, got:\n%s", shadow)
+	}
+}
+
+func TestEngine_Must_ReturnWithSubstitution(t *testing.T) {
+	dir := setupDir(t, map[string]string{
+		"main.go": `package main
+
+import "fmt"
+
+func Run() (string, error) {
+	_, _ = fmt.Println("hello") // @must return("", _)
+	return "ok", nil
+}
+`,
+	})
+	e := NewEngine(dir)
+	e.Run()
+	shadow := readShadow(t, e)
+	// _ should be substituted with __inco_err
+	if !strings.Contains(shadow, `return "", __inco_err`) {
+		t.Errorf("should contain return with substituted _, got:\n%s", shadow)
+	}
+}
+
+func TestEngine_Expect_Return(t *testing.T) {
+	dir := setupDir(t, map[string]string{
+		"main.go": `package main
+
+func Lookup() int {
+	m := map[string]int{"a": 1}
+	v, _ := m["a"] // @expect return(0)
+	return v
+}
+`,
+	})
+	e := NewEngine(dir)
+	e.Run()
+	shadow := readShadow(t, e)
+	if !strings.Contains(shadow, "!__inco_ok") {
+		t.Errorf("should contain !__inco_ok, got:\n%s", shadow)
+	}
+	if !strings.Contains(shadow, "return 0") {
+		t.Errorf("should contain return 0, got:\n%s", shadow)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// continue action tests
+// ---------------------------------------------------------------------------
+
+func TestEngine_Require_Continue(t *testing.T) {
+	dir := setupDir(t, map[string]string{
+		"main.go": `package main
+
+import "fmt"
+
+func PrintPositive(nums []int) {
+	for _, n := range nums {
+		// @require n > 0 continue
+		fmt.Println(n)
+	}
+}
+`,
+	})
+	e := NewEngine(dir)
+	e.Run()
+	shadow := readShadow(t, e)
+	if !strings.Contains(shadow, "if !(n > 0)") {
+		t.Errorf("should contain negated condition, got:\n%s", shadow)
+	}
+	if !strings.Contains(shadow, "continue") {
+		t.Errorf("should contain continue, got:\n%s", shadow)
+	}
+}
+
+func TestEngine_Must_Continue(t *testing.T) {
+	dir := setupDir(t, map[string]string{
+		"main.go": `package main
+
+import (
+	"fmt"
+	"strconv"
+)
+
+func ParseAll(strs []string) {
+	for _, s := range strs {
+		_, _ = strconv.Atoi(s) // @must continue
+		fmt.Println(s)
+	}
+}
+`,
+	})
+	e := NewEngine(dir)
+	e.Run()
+	shadow := readShadow(t, e)
+	if !strings.Contains(shadow, "__inco_err") {
+		t.Errorf("should contain __inco_err, got:\n%s", shadow)
+	}
+	if !strings.Contains(shadow, "continue") {
+		t.Errorf("should contain continue, got:\n%s", shadow)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// break action tests
+// ---------------------------------------------------------------------------
+
+func TestEngine_Require_Break(t *testing.T) {
+	dir := setupDir(t, map[string]string{
+		"main.go": `package main
+
+import "fmt"
+
+func FindFirst(nums []int) {
+	for _, n := range nums {
+		// @require n != 42 break
+		fmt.Println(n)
+	}
+}
+`,
+	})
+	e := NewEngine(dir)
+	e.Run()
+	shadow := readShadow(t, e)
+	if !strings.Contains(shadow, "if !(n != 42)") {
+		t.Errorf("should contain negated condition, got:\n%s", shadow)
+	}
+	if !strings.Contains(shadow, "break") {
+		t.Errorf("should contain break, got:\n%s", shadow)
+	}
+}
+
+func TestEngine_Expect_Break(t *testing.T) {
+	dir := setupDir(t, map[string]string{
+		"main.go": `package main
+
+func FindKey(m map[string]int) int {
+	for _, k := range []string{"a", "b", "c"} {
+		v, _ := m[k] // @expect break
+		return v
+	}
+	return -1
+}
+`,
+	})
+	e := NewEngine(dir)
+	e.Run()
+	shadow := readShadow(t, e)
+	if !strings.Contains(shadow, "!__inco_ok") {
+		t.Errorf("should contain !__inco_ok, got:\n%s", shadow)
+	}
+	if !strings.Contains(shadow, "break") {
+		t.Errorf("should contain break, got:\n%s", shadow)
+	}
+}

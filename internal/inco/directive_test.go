@@ -230,3 +230,185 @@ func TestParseDirective_EnsureNoExpr(t *testing.T) {
 		t.Errorf("expected nil for bare @ensure, got %+v", d)
 	}
 }
+
+// --- return action tests ---
+
+func TestParseDirective_RequireReturn(t *testing.T) {
+	d := ParseDirective("// @require x > 0 return")
+	if d == nil {
+		t.Fatal("nil")
+	}
+	if d.Action != ActionReturn {
+		t.Errorf("Action = %v, want Return", d.Action)
+	}
+	if d.Expr != "x > 0" {
+		t.Errorf("Expr = %q", d.Expr)
+	}
+	if len(d.ActionArgs) != 0 {
+		t.Errorf("ActionArgs = %v, want empty", d.ActionArgs)
+	}
+}
+
+func TestParseDirective_RequireReturnWithArgs(t *testing.T) {
+	d := ParseDirective(`// @require x > 0 return(0, fmt.Errorf("bad x"))`)
+	if d == nil {
+		t.Fatal("nil")
+	}
+	if d.Action != ActionReturn {
+		t.Errorf("Action = %v, want Return", d.Action)
+	}
+	if d.Expr != "x > 0" {
+		t.Errorf("Expr = %q", d.Expr)
+	}
+	if len(d.ActionArgs) != 2 {
+		t.Fatalf("ActionArgs len = %d, want 2: %v", len(d.ActionArgs), d.ActionArgs)
+	}
+	if d.ActionArgs[0] != "0" {
+		t.Errorf("ActionArgs[0] = %q, want %q", d.ActionArgs[0], "0")
+	}
+	if d.ActionArgs[1] != `fmt.Errorf("bad x")` {
+		t.Errorf("ActionArgs[1] = %q", d.ActionArgs[1])
+	}
+}
+
+func TestParseDirective_MustReturn(t *testing.T) {
+	d := ParseDirective("// @must return(nil, _)")
+	if d == nil {
+		t.Fatal("nil")
+	}
+	if d.Kind != KindMust {
+		t.Errorf("Kind = %v, want Must", d.Kind)
+	}
+	if d.Action != ActionReturn {
+		t.Errorf("Action = %v, want Return", d.Action)
+	}
+	if len(d.ActionArgs) != 2 || d.ActionArgs[0] != "nil" || d.ActionArgs[1] != "_" {
+		t.Errorf("ActionArgs = %v", d.ActionArgs)
+	}
+}
+
+func TestParseDirective_ExpectReturn(t *testing.T) {
+	d := ParseDirective("// @expect return")
+	if d == nil {
+		t.Fatal("nil")
+	}
+	if d.Kind != KindExpect {
+		t.Errorf("Kind = %v, want Expect", d.Kind)
+	}
+	if d.Action != ActionReturn {
+		t.Errorf("Action = %v, want Return", d.Action)
+	}
+}
+
+// --- continue action tests ---
+
+func TestParseDirective_RequireContinue(t *testing.T) {
+	d := ParseDirective("// @require x > 0 continue")
+	if d == nil {
+		t.Fatal("nil")
+	}
+	if d.Action != ActionContinue {
+		t.Errorf("Action = %v, want Continue", d.Action)
+	}
+	if d.Expr != "x > 0" {
+		t.Errorf("Expr = %q", d.Expr)
+	}
+}
+
+func TestParseDirective_MustContinue(t *testing.T) {
+	d := ParseDirective("// @must continue")
+	if d == nil {
+		t.Fatal("nil")
+	}
+	if d.Kind != KindMust {
+		t.Errorf("Kind = %v", d.Kind)
+	}
+	if d.Action != ActionContinue {
+		t.Errorf("Action = %v, want Continue", d.Action)
+	}
+}
+
+func TestParseDirective_ExpectContinue(t *testing.T) {
+	d := ParseDirective("// @expect continue")
+	if d == nil {
+		t.Fatal("nil")
+	}
+	if d.Kind != KindExpect {
+		t.Errorf("Kind = %v", d.Kind)
+	}
+	if d.Action != ActionContinue {
+		t.Errorf("Action = %v, want Continue", d.Action)
+	}
+}
+
+// --- break action tests ---
+
+func TestParseDirective_RequireBreak(t *testing.T) {
+	d := ParseDirective("// @require x > 0 break")
+	if d == nil {
+		t.Fatal("nil")
+	}
+	if d.Action != ActionBreak {
+		t.Errorf("Action = %v, want Break", d.Action)
+	}
+	if d.Expr != "x > 0" {
+		t.Errorf("Expr = %q", d.Expr)
+	}
+}
+
+func TestParseDirective_MustBreak(t *testing.T) {
+	d := ParseDirective("// @must break")
+	if d == nil {
+		t.Fatal("nil")
+	}
+	if d.Kind != KindMust {
+		t.Errorf("Kind = %v", d.Kind)
+	}
+	if d.Action != ActionBreak {
+		t.Errorf("Action = %v, want Break", d.Action)
+	}
+}
+
+func TestParseDirective_ExpectBreak(t *testing.T) {
+	d := ParseDirective("// @expect break")
+	if d == nil {
+		t.Fatal("nil")
+	}
+	if d.Kind != KindExpect {
+		t.Errorf("Kind = %v", d.Kind)
+	}
+	if d.Action != ActionBreak {
+		t.Errorf("Action = %v, want Break", d.Action)
+	}
+}
+
+// --- edge: keyword-like identifiers should not match ---
+
+func TestParseDirective_ReturnInExpr(t *testing.T) {
+	// "returnValue" should not match "return" action
+	d := ParseDirective("// @require returnValue > 0")
+	if d == nil {
+		t.Fatal("nil")
+	}
+	if d.Action != ActionPanic {
+		t.Errorf("Action = %v, want Panic (default)", d.Action)
+	}
+	if d.Expr != "returnValue > 0" {
+		t.Errorf("Expr = %q", d.Expr)
+	}
+}
+
+func TestParseDirective_ContinueInExpr(t *testing.T) {
+	// "shouldContinue" ending with "continue" won't match because
+	// we search for " continue" (with space prefix).
+	d := ParseDirective("// @require shouldContinue")
+	if d == nil {
+		t.Fatal("nil")
+	}
+	if d.Action != ActionPanic {
+		t.Errorf("Action = %v, want Panic", d.Action)
+	}
+	if d.Expr != "shouldContinue" {
+		t.Errorf("Expr = %q", d.Expr)
+	}
+}
