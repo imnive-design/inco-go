@@ -95,14 +95,9 @@ func Audit(root string) *AuditResult {
 func collectIgnored(root string, out *[]string) {
 	ig := NewIgnoreTree(root)
 	filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
+		// @inco: err == nil, -return(nil)
 		if d.IsDir() {
-			name := d.Name()
-			if skipDirRe.MatchString(name) {
-				return filepath.SkipDir
-			}
+			// @inco: !skipDirRe.MatchString(d.Name()), -return(filepath.SkipDir)
 			ig.LeaveDir(path)
 			ig.EnterDir(path)
 			if ig.Match(path, true) {
@@ -112,10 +107,7 @@ func collectIgnored(root string, out *[]string) {
 			}
 			return nil
 		}
-		name := d.Name()
-		if !goSourceRe.MatchString(name) || testFileRe.MatchString(name) {
-			return nil
-		}
+		// @inco: goSourceRe.MatchString(d.Name()) && !testFileRe.MatchString(d.Name()), -return(nil)
 		if ig.Match(path, false) {
 			rel, _ := filepath.Rel(root, path)
 			*out = append(*out, rel)
