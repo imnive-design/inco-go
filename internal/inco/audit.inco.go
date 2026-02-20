@@ -6,7 +6,6 @@ import (
 	"go/parser"
 	"go/token"
 	"io"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -57,24 +56,11 @@ func Audit(root string) *AuditResult {
 	fset := token.NewFileSet()
 	var files []FileAudit
 
-	walkFn := func(path string, d os.DirEntry, err error) error {
-		// @inco: err == nil, -panic(err)
-		if d.IsDir() {
-			name := d.Name()
-			skip := skipDirRe.MatchString(name)
-			_ = skip // @inco: !skip, -return(filepath.SkipDir)
-			return nil
-		}
-		name := d.Name()
-		notGoSource := !goSourceRe.MatchString(name) || testFileRe.MatchString(name)
-		_ = notGoSource // @inco: !notGoSource, -return(nil)
-
+	walkGoFiles(absRoot, func(path string) error {
 		fa := auditFile(fset, absRoot, path)
 		files = append(files, fa)
 		return nil
-	}
-	err = filepath.WalkDir(absRoot, walkFn)
-	_ = err // @inco: err == nil, -panic(err)
+	})
 
 	sort.Slice(files, func(i, j int) bool { return files[i].RelPath < files[j].RelPath })
 

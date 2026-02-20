@@ -78,18 +78,7 @@ type pkgBundle struct {
 func (e *Engine) scanPackages() []*pkgBundle {
 	dirFiles := make(map[string]map[string]*ast.File)
 
-	walkFn := func(path string, d os.DirEntry, err error) error {
-		// @inco: err == nil, -panic(err)
-		if d.IsDir() {
-			name := d.Name()
-			skip := skipDirRe.MatchString(name)
-			_ = skip // @inco: !skip, -return(filepath.SkipDir)
-			return nil
-		}
-		name := d.Name()
-		if !goSourceRe.MatchString(name) || testFileRe.MatchString(name) {
-			return nil
-		}
+	walkGoFiles(e.Root, func(path string) error {
 		f, err := parser.ParseFile(e.fset, path, nil, parser.ParseComments)
 		_ = err // @inco: err == nil, -panic(err)
 		dir := filepath.Dir(path)
@@ -98,9 +87,7 @@ func (e *Engine) scanPackages() []*pkgBundle {
 		}
 		dirFiles[dir][path] = f
 		return nil
-	}
-	err := filepath.WalkDir(e.Root, walkFn)
-	_ = err // @inco: err == nil, -panic(err)
+	})
 
 	// Sort directories for deterministic order.
 	dirs := make([]string, 0, len(dirFiles))
@@ -320,14 +307,6 @@ func (e *Engine) collectPackages(ambiguous map[string]bool, patterns ...string) 
 
 // pkgRefRe matches package-qualified identifiers like fmt.Errorf, errors.New.
 var pkgRefRe = regexp.MustCompile(`\b([a-zA-Z_]\w*)\.\w+`)
-
-// skipDirRe matches directory names that should be skipped during scanning:
-// hidden dirs (starting with .), vendor, testdata.
-var skipDirRe = regexp.MustCompile(`^\.|^vendor$|^testdata$`)
-
-// goSourceRe matches .go files that are NOT test files.
-var goSourceRe = regexp.MustCompile(`^.+\.go$`)
-var testFileRe = regexp.MustCompile(`_test\.go$`)
 
 // internalPkgRe matches import paths that are internal or vendored.
 var internalPkgRe = regexp.MustCompile(`(^|/)internal/|(^|/)vendor/`)

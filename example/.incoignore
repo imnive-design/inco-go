@@ -1,0 +1,2 @@
+# example目录下的.inco.go文件不参与inco处理
+*.inco.go
