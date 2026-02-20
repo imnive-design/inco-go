@@ -228,21 +228,24 @@ This removes each generated `foo.go` and restores `foo.inco` → `foo.inco.go`.
 
 ## Build from Source
 
+Inco requires itself to build (self-hosting). Install it first:
+
 ```bash
-# Normal build (requires inco in PATH):
+GOPRIVATE="github.com/incognito-design/*" \
+  go install github.com/incognito-design/inco-go/cmd/inco@latest
+```
+
+Then:
+
+```bash
 make build      # inco build → bin/inco
-
-# Bootstrap (no inco required):
-make bootstrap
-# Stage 0: plain go build → bin/inco-bootstrap (no contracts)
-# Stage 1: bootstrap generates overlay → compiles with contracts → bin/inco
-
-# Other targets:
 make test       # Run tests with contracts enforced
 make gen        # Regenerate overlay
 make clean      # Remove .inco_cache/ and bin/
 make install    # Install to $GOPATH/bin
 ```
+
+`make bootstrap` is available as a fallback — it does a plain `go build` (without contracts) to produce a temporary binary, then uses that binary to build the real one. This is only needed if inco is not yet in PATH.
 
 ## Audit
 
@@ -319,9 +322,17 @@ example/            Demo files:
   generics.inco.go    Type parameters, generic containers
 ```
 
-## Bootstrap Insights
+## Self-Hosting Notes
 
-Inco is self-hosting — it uses `@inco:` directives in its own source. The bootstrap process revealed key design insights:
+Inco is self-hosting — it uses `@inco:` directives in its own source code. The development workflow is:
+
+1. Install inco from the release repo (`inco-go`) via `go install`
+2. Use the installed `inco` to build/test the development repo
+3. When changes are ready, `inco release` + push to `inco-go`
+
+This circular dependency works because `@inco:` directives are plain Go comments — the code compiles and runs correctly with or without directive expansion.
+
+### Key design insights from self-hosting
 
 ### Directives are guards, not logic
 
@@ -337,9 +348,9 @@ When an error is only used in a directive, Go complains about an unused variable
 _ = err // @inco: err == nil, -panic(err)
 ```
 
-The `_ = err` satisfies the compiler in plain `go build` (bootstrap), while `// @inco:` generates the real guard in the overlay. One line, dual purpose.
+`_ = err` satisfies the compiler when building without inco (e.g. plain `go build`), while `// @inco:` generates the real guard in the overlay.
 
-### Bootstrap must compile without directives
+### Source must compile without directives
 
 Since directives are comments, `go build` ignores them. This means the code must be **valid and runnable** without any `@inco:` expansion. This constraint is actually a strength — it guarantees every `.inco.go` file is testable and buildable with zero tooling.
 
@@ -353,8 +364,8 @@ Naive "is it a comment line? → standalone, else inline" broke on struct field 
 
 ### Current self-hosting stats
 
-- 73 `@inco:` directives, 69 `if` statements
-- **inco/(if+inco): 51.4%** — majority of guards are directives
+- 77 `@inco:` directives, 65 `if` statements
+- **inco/(if+inco): 54.2%** — majority of guards are directives
 - 58.5% function coverage (38/65 functions guarded)
 - 11 source files mapped through overlay
 

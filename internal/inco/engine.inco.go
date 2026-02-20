@@ -9,6 +9,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -24,9 +25,10 @@ import (
 // Engine scans Go source files for @inco: directives and produces an
 // overlay that injects the corresponding if-statements at compile time.
 type Engine struct {
-	Root    string
-	Overlay Overlay
-	fset    *token.FileSet
+	Root      string
+	Overlay   Overlay
+	fset      *token.FileSet
+	importMap map[string]string // lazily built: package name → import path
 }
 
 // NewEngine creates an engine rooted at the given directory.
@@ -266,31 +268,54 @@ func (e *Engine) buildPanicBody(d *Directive, path string, line int) string {
 // Import management
 // ---------------------------------------------------------------------------
 
-// stdlibPackages is a set of commonly used standard library packages that
-// might appear in directive action arguments.
-var stdlibPackages = map[string]string{
-	"fmt":     "fmt",
-	"errors":  "errors",
-	"strings": "strings",
-	"strconv": "strconv",
-	"log":     "log",
-	"os":      "os",
-	"io":      "io",
-	"math":    "math",
-	"time":    "time",
-	"context": "context",
-	"sync":    "sync",
-	"sort":    "sort",
-	"bytes":   "bytes",
-	"regexp":  "regexp",
-	"path":    "path",
-	"net":     "net",
-	"http":    "net/http",
-	"json":    "encoding/json",
-	"xml":     "encoding/xml",
-	"sql":     "database/sql",
-	"reflect": "reflect",
-	"unsafe":  "unsafe",
+// buildImportMap dynamically resolves package names to import paths by
+// querying the Go toolchain. The result is cached for the engine's lifetime
+// so that "go list" runs at most once per invocation.
+func (e *Engine) buildImportMap() map[string]string {
+	if e.importMap != nil {
+		return e.importMap
+	}
+	e.importMap = make(map[string]string)
+	ambiguous := make(map[string]bool)
+
+	// 1. All standard library packages.
+	e.collectPackages(ambiguous, "std")
+
+	// 2. Packages already used in the module (covers third-party deps).
+	e.collectPackages(ambiguous, "-deps", "-e", "./...")
+
+	// Remove ambiguous names (multiple import paths share a short name,
+	// e.g. "template" → text/template vs html/template).
+	for name := range ambiguous {
+		delete(e.importMap, name)
+	}
+
+	return e.importMap
+}
+
+// collectPackages runs "go list" with the given patterns and records
+// each name → importPath pair in e.importMap.
+func (e *Engine) collectPackages(ambiguous map[string]bool, patterns ...string) {
+	args := append([]string{"list", "-e", "-f", "{{.Name}} {{.ImportPath}}"}, patterns...)
+	cmd := exec.Command("go", args...)
+	cmd.Dir = e.Root
+	out, err := cmd.Output()
+	_ = err // @inco: err == nil, -return
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		// @inco: line != "", -continue
+		parts := strings.SplitN(line, " ", 2)
+		valid := len(parts) == 2 && parts[0] != "" && parts[0] != "main"
+		_ = valid // @inco: valid, -continue
+		name, impPath := parts[0], parts[1]
+		// Skip internal and vendored packages — they are not freely importable.
+		internal := strings.Contains(impPath, "/internal/") || strings.HasPrefix(impPath, "internal/") || strings.Contains(impPath, "/vendor/")
+		_ = internal // @inco: !internal, -continue
+		if existing, ok := e.importMap[name]; ok && existing != impPath {
+			ambiguous[name] = true
+		} else if !ambiguous[name] {
+			e.importMap[name] = impPath
+		}
+	}
 }
 
 // pkgRefRe matches package-qualified identifiers like fmt.Errorf, errors.New.
@@ -330,10 +355,11 @@ func (e *Engine) addMissingImports(content string, origFile *ast.File, directive
 	}
 
 	// 3. Find which needed packages are missing.
+	importMap := e.buildImportMap()
 	var toAdd []string
 	for pkg := range needed {
 		// @inco: !imported[pkg], -continue
-		if _, ok := stdlibPackages[pkg]; ok {
+		if _, ok := importMap[pkg]; ok {
 			toAdd = append(toAdd, pkg)
 		}
 	}
@@ -344,7 +370,7 @@ func (e *Engine) addMissingImports(content string, origFile *ast.File, directive
 	shadowAST, err := parser.ParseFile(fset, "", content, parser.ParseComments)
 	_ = err // @inco: err == nil, -return(content)
 	for _, pkg := range toAdd {
-		astutil.AddImport(fset, shadowAST, stdlibPackages[pkg])
+		astutil.AddImport(fset, shadowAST, importMap[pkg])
 	}
 
 	// 5. Re-render.
