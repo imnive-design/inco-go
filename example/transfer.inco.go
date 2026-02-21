@@ -2,33 +2,24 @@ package example
 
 import "fmt"
 
+// Account represents a bank account with an ID and balance in cents.
 type Account struct {
 	ID      string
-	Balance int
+	Balance int // in cents
 }
 
-type QueryResult struct {
-	RowsAffected int
-}
-
-type dbConn struct{}
-
-func (d *dbConn) Exec(query string) (*QueryResult, error) {
-	return &QueryResult{RowsAffected: 1}, nil
-}
-
-var db = &dbConn{}
-
-// Transfer demonstrates multiple @inco: with panic.
-func Transfer(from *Account, to *Account, amount int) {
+// Transfer moves amount cents from one account to another.
+// Preconditions are enforced via @inco: directives.
+func Transfer(from *Account, to *Account, amount int) error {
 	// @inco: from != nil
 	// @inco: to != nil
+	// @inco: from != to, -panic("cannot transfer to self")
 	// @inco: amount > 0, -panic("amount must be positive")
+	// @inco: from.Balance >= amount, -return(fmt.Errorf("insufficient funds: have %d, need %d", from.Balance, amount))
 
-	query := fmt.Sprintf("UPDATE accounts SET balance = balance - %d WHERE id = '%s'", amount, from.ID)
-	res, err := db.Exec(query)
-	_ = err // @inco: err == nil, -panic(err)
+	from.Balance -= amount
+	to.Balance += amount
 
-	fmt.Printf("Transfer %d from %s to %s, affected %d rows\n",
-		amount, from.ID, to.ID, res.RowsAffected)
+	fmt.Printf("transferred %d from %s to %s\n", amount, from.ID, to.ID)
+	return nil
 }

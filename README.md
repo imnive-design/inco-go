@@ -43,41 +43,26 @@ Inline directives attach to a code statement via `// @inco:` at the end of the l
 
 The default action is `-panic` with an auto-generated message.
 
-### Examples
+### Example: Bank Transfer
 
 ```go
-func Transfer(from *Account, to *Account, amount int) {
+// Transfer moves amount cents from one account to another.
+func Transfer(from *Account, to *Account, amount int) error {
     // @inco: from != nil
     // @inco: to != nil
+    // @inco: from != to, -panic("cannot transfer to self")
     // @inco: amount > 0, -panic("amount must be positive")
+    // @inco: from.Balance >= amount, -return(fmt.Errorf("insufficient funds: have %d, need %d", from.Balance, amount))
 
-    // ...
+    from.Balance -= amount
+    to.Balance += amount
+
+    fmt.Printf("transferred %d from %s to %s\n", amount, from.ID, to.ID)
+    return nil
 }
 ```
 
-```go
-func Parse(s string) (int, error) {
-    // @inco: len(s) > 0, -return(0, fmt.Errorf("empty"))
-    return len(s), nil
-}
-```
-
-```go
-func (e *Engine) processFile(path string) {
-    src, err := os.ReadFile(path)
-    _ = err // @inco: err == nil, -panic(err)
-    // ...
-}
-```
-
-```go
-func PrintPositive(nums []int) {
-    for _, n := range nums {
-        // @inco: n > 0, -continue
-        fmt.Println(n)
-    }
-}
-```
+Five directives, each expressing a precondition the caller must satisfy. No `if` noise — just intent.
 
 ### Actions
 
@@ -95,31 +80,28 @@ func PrintPositive(nums []int) {
 After `inco gen`, the above becomes a shadow file in `.inco_cache/`:
 
 ```go
-func Transfer(from *Account, to *Account, amount int) {
+func Transfer(from *Account, to *Account, amount int) error {
     if !(from != nil) {
-        panic("inco violation: from != nil (at transfer.go:2)")
+        panic("inco violation: from != nil (at transfer.inco.go:14)")
     }
     if !(to != nil) {
-        panic("inco violation: to != nil (at transfer.go:3)")
+        panic("inco violation: to != nil (at transfer.inco.go:15)")
+    }
+    if !(from != to) {
+        panic("cannot transfer to self")
     }
     if !(amount > 0) {
         panic("amount must be positive")
     }
-
-    // ...
-}
-```
-
-For inline directives, the code line is preserved and the if-block is injected after it:
-
-```go
-func (e *Engine) processFile(path string) {
-    src, err := os.ReadFile(path)
-    _ = err
-    if !(err == nil) {
-        panic(err)
+    if !(from.Balance >= amount) {
+        return fmt.Errorf("insufficient funds: have %d, need %d", from.Balance, amount)
     }
-    // ...
+
+    from.Balance -= amount
+    to.Balance += amount
+
+    fmt.Printf("transferred %d from %s to %s\n", amount, from.ID, to.ID)
+    return nil
 }
 ```
 
@@ -286,7 +268,7 @@ internal/inco/      Core engine:
   walk.inco.go        Shared file traversal logic
 example/            Demo files:
   demo.inco.go        @inco: basics
-  transfer.inco.go    Multiple @inco: with panic
+  transfer.inco.go    Bank transfer with preconditions
   edge_cases.inco.go  Closures, actions, edge cases
   generics.inco.go    Type parameters, generic containers
 ```
