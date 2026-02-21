@@ -28,10 +28,24 @@ func walkGoFiles(root string, fn func(path string) error) error {
 			// @inco: !ig.Match(path, true), -return(filepath.SkipDir)
 			return nil
 		}
-		// @inco: goSourceRe.MatchString(d.Name()) && !testFileRe.MatchString(d.Name()), -return(nil)
-		// @inco: !ig.Match(path, false), -return(nil)
+		isGoSource := goSourceRe.MatchString(d.Name()) && !testFileRe.MatchString(d.Name())
+		_ = isGoSource // @inco: isGoSource, -return(nil)
+		ignored := ig.Match(path, false)
+		_ = ignored // @inco: !ignored, -return(nil)
 		return fn(path)
 	})
+}
+
+// collectGoFiles returns all non-test .go file paths under root,
+// respecting skipDirRe and .incoignore. This is a convenience wrapper
+// around walkGoFiles for callers that need the full path list up front.
+func collectGoFiles(root string) []string {
+	var paths []string
+	walkGoFiles(root, func(path string) error {
+		paths = append(paths, path)
+		return nil
+	})
+	return paths
 }
 
 // ---------------------------------------------------------------------------

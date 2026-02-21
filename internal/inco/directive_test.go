@@ -275,6 +275,14 @@ func TestSplitTopLevel(t *testing.T) {
 		{`"a,b", c`, []string{`"a,b"`, "c"}},
 		{"single", []string{"single"}},
 		{"", nil},
+		// Raw string with comma inside.
+		{"`a,b`, c", []string{"`a,b`", "c"}},
+		// Raw string with backslash (no escaping in raw strings).
+		{"`a\\b`, c", []string{"`a\\b`", "c"}},
+		// Double-quoted string with escaped quote.
+		{`"a\"b", c`, []string{`"a\"b"`, "c"}},
+		// Double-quoted string with escaped backslash before closing quote.
+		{`"a\\", c`, []string{`"a\\"`, "c"}},
 	}
 	for _, c := range cases {
 		got := splitTopLevel(c.input)

@@ -77,22 +77,30 @@ func stripComment(s string) string {
 }
 
 // splitTopLevel splits s by top-level commas, respecting nested parens,
-// brackets, braces and double-quoted strings.
+// brackets, braces, double-quoted strings, and raw strings (backtick).
 func splitTopLevel(s string) []string {
 	var result []string
 	depth := 0
-	inStr := false
 	start := 0
 	for i := 0; i < len(s); i++ {
 		ch := s[i]
 		switch {
-		case ch == '"' && !inStr:
-			inStr = true
-		case ch == '"' && inStr && (i == 0 || s[i-1] != '\\'):
-			inStr = false
-		case inStr:
-			if ch == '\\' {
-				i++ // skip next
+		case ch == '"':
+			// Double-quoted string: skip until unescaped closing quote.
+			i++
+			for i < len(s) {
+				if s[i] == '\\' {
+					i++ // skip escaped char
+				} else if s[i] == '"' {
+					break
+				}
+				i++
+			}
+		case ch == '`':
+			// Raw string: no escapes, skip until closing backtick.
+			i++
+			for i < len(s) && s[i] != '`' {
+				i++
 			}
 		case ch == '(' || ch == '[' || ch == '{':
 			depth++

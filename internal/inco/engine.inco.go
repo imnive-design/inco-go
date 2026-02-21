@@ -12,7 +12,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
+	"sync"
 
 	"golang.org/x/tools/go/ast/astutil"
 )
@@ -24,10 +26,10 @@ import (
 // Engine scans Go source files for @inco: directives and produces an
 // overlay that injects the corresponding if-statements at compile time.
 type Engine struct {
-	Root      string
-	Overlay   Overlay
-	fset      *token.FileSet
-	importMap map[string]string // lazily built: package name → import path
+	Root       string
+	Overlay    Overlay
+	importMap  map[string]string // lazily built: package name → import path
+	importOnce sync.Once
 }
 
 // NewEngine creates an engine rooted at the given directory.
@@ -36,7 +38,6 @@ func NewEngine(root string) *Engine {
 	return &Engine{
 		Root:    root,
 		Overlay: Overlay{Replace: make(map[string]string)},
-		fset:    token.NewFileSet(),
 	}
 }
 
@@ -44,46 +45,92 @@ func NewEngine(root string) *Engine {
 // Run — top-level entry point
 // ---------------------------------------------------------------------------
 
+// fileResult holds the output of processing a single source file.
+type fileResult struct {
+	Path       string
+	SrcHash    string
+	ShadowPath string
+	ShadowData []byte // nil when reused from cache
+	Cached     bool
+}
+
 // Run scans all Go source files under Root, processes @inco: directives,
 // and writes the overlay + shadow files into .inco_cache/.
 //
 // Incremental: if a source file's content hash matches the manifest and
 // the shadow file still exists, the file is skipped.
+//
+// File processing is parallelized across available CPUs.
 func (e *Engine) Run() {
 	// @inco: e != nil, -panic("Run: nil engine")
 	// @inco: e.Root != "", -panic("Run: root must not be empty")
 
 	oldManifest := e.loadManifest()
+	paths := collectGoFiles(e.Root)
+
+	// Process files concurrently.
+	results := make([]fileResult, len(paths))
+	workers := runtime.GOMAXPROCS(0)
+	if workers > len(paths) {
+		workers = len(paths)
+	}
+
+	var wg sync.WaitGroup
+	ch := make(chan int, len(paths))
+	for i := range paths {
+		ch <- i
+	}
+	close(ch)
+
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// Each goroutine gets its own fset to avoid contention.
+			fset := token.NewFileSet()
+			for idx := range ch {
+				path := paths[idx]
+				srcHash := hashFile(path)
+
+				// Check cache: source unchanged & shadow file exists → reuse.
+				if prev, ok := oldManifest.Files[path]; ok && prev.SrcHash == srcHash {
+					if _, err := os.Stat(prev.ShadowPath); err == nil {
+						results[idx] = fileResult{
+							Path: path, SrcHash: srcHash,
+							ShadowPath: prev.ShadowPath, Cached: true,
+						}
+						continue
+					}
+				}
+
+				// Cache miss — parse and process.
+				f, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+				_ = err // @inco: err == nil, -panic(err)
+				shadowData := e.generateShadow(path, f, fset)
+				results[idx] = fileResult{
+					Path: path, SrcHash: srcHash,
+					ShadowData: shadowData,
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	// Collect results sequentially — write shadows, build overlay & manifest.
 	newManifest := &Manifest{Files: make(map[string]ManifestEntry)}
 	var skipped int
-
-	walkGoFiles(e.Root, func(path string) error {
-		srcHash := hashFile(path)
-
-		// Check cache: source unchanged & shadow file exists → reuse.
-		if prev, ok := oldManifest.Files[path]; ok && prev.SrcHash == srcHash {
-			if _, err := os.Stat(prev.ShadowPath); err == nil {
-				e.Overlay.Replace[path] = prev.ShadowPath
-				newManifest.Files[path] = prev
-				skipped++
-				return nil
+	for _, r := range results {
+		if r.Cached {
+			e.Overlay.Replace[r.Path] = r.ShadowPath
+			newManifest.Files[r.Path] = ManifestEntry{SrcHash: r.SrcHash, ShadowPath: r.ShadowPath}
+			skipped++
+		} else {
+			e.writeShadow(r.Path, r.ShadowData)
+			if sp, ok := e.Overlay.Replace[r.Path]; ok {
+				newManifest.Files[r.Path] = ManifestEntry{SrcHash: r.SrcHash, ShadowPath: sp}
 			}
 		}
-
-		// Cache miss — parse and process.
-		f, err := parser.ParseFile(e.fset, path, nil, parser.ParseComments)
-		_ = err // @inco: err == nil, -panic(err)
-		e.processFile(path, f)
-
-		// Record new manifest entry.
-		if shadowPath, ok := e.Overlay.Replace[path]; ok {
-			newManifest.Files[path] = ManifestEntry{
-				SrcHash:    srcHash,
-				ShadowPath: shadowPath,
-			}
-		}
-		return nil
-	})
+	}
 
 	// Clean up stale shadow files.
 	for path, entry := range oldManifest.Files {
@@ -108,18 +155,19 @@ func (e *Engine) Run() {
 // File processing
 // ---------------------------------------------------------------------------
 
-// processFile scans a single source file for directives,
-// generates injected if-blocks via text replacement, and writes a shadow.
-func (e *Engine) processFile(path string, f *ast.File) {
-	// @inco: path != "", -panic("processFile: empty path")
-	// @inco: f != nil, -panic("processFile: nil AST")
+// generateShadow produces the shadow file content for a source file.
+// It is safe to call from multiple goroutines — it only reads e.Root
+// and uses the provided fset.
+func (e *Engine) generateShadow(path string, f *ast.File, fset *token.FileSet) []byte {
+	// @inco: path != "", -panic("generateShadow: empty path")
+	// @inco: f != nil, -panic("generateShadow: nil AST")
 	// 1. Collect directive lines from AST comments.
 	directives := make(map[int]*Directive) // 1-based line → Directive
 	for _, cg := range f.Comments {
 		for _, c := range cg.List {
 			d := ParseDirective(c.Text)
 			if d != nil {
-				line := e.fset.Position(c.Pos()).Line
+				line := fset.Position(c.Pos()).Line
 				directives[line] = d
 			}
 		}
@@ -131,14 +179,10 @@ func (e *Engine) processFile(path string, f *ast.File) {
 	lines := strings.Split(string(src), "\n")
 
 	// 3. Classify directives as standalone or inline using AST.
-	//    - "standalone": the entire line is a comment (starts with // or /*).
-	//    - "inline": the line contains an AST statement (assignment, return, etc.)
-	//      with a trailing @inco: comment.
-	//    - Otherwise (e.g. struct field comment): directive is ignored.
-	standalone := make(map[int]*Directive) // entire line is a comment
-	inline := make(map[int]*Directive)     // code with trailing @inco: comment
+	standalone := make(map[int]*Directive)
+	inline := make(map[int]*Directive)
 
-	stmtLines := collectStmtLines(f, e.fset)
+	stmtLines := collectStmtLines(f, fset)
 	for lineNum, d := range directives {
 		idx := lineNum - 1
 		// @inco: idx >= 0 && idx < len(lines), -continue
@@ -149,11 +193,9 @@ func (e *Engine) processFile(path string, f *ast.File) {
 		} else if stmtLines[lineNum] {
 			inline[lineNum] = d
 		}
-		// else: directive in non-statement context (e.g. struct field) — skip
 	}
 
-	// 4. Build output: replace directive lines with if-blocks, add //line
-	//    directives to preserve source mapping.
+	// 4. Build output.
 	var output []string
 	prevWasDirective := false
 
@@ -161,13 +203,11 @@ func (e *Engine) processFile(path string, f *ast.File) {
 		lineNum := idx + 1
 
 		if d, ok := standalone[lineNum]; ok {
-			// Standalone @inco:: replace comment line with if-block.
 			indent := extractIndent(line)
 			output = append(output, fmt.Sprintf("%s//line %s:%d", indent, path, lineNum))
 			output = append(output, e.generateIfBlock(d, indent, path, lineNum))
 			prevWasDirective = true
 		} else if d, ok := inline[lineNum]; ok {
-			// Inline @inco:: keep code line, inject if-block after.
 			output = append(output, line)
 			indent := extractIndent(line)
 			output = append(output, e.generateIfBlock(d, indent, path, lineNum))
@@ -182,12 +222,11 @@ func (e *Engine) processFile(path string, f *ast.File) {
 		}
 	}
 
-	// 5. Collect package references from injected code, add missing imports.
+	// 5. Add missing imports.
 	content := strings.Join(output, "\n")
 	content = e.addMissingImports(content, f, directives)
 
-	// 6. Write shadow file.
-	e.writeShadow(path, []byte(content))
+	return []byte(content)
 }
 
 // ---------------------------------------------------------------------------
@@ -245,24 +284,22 @@ func (e *Engine) buildPanicBody(d *Directive, path string, line int) string {
 // querying the Go toolchain. The result is cached for the engine's lifetime
 // so that "go list" runs at most once per invocation.
 func (e *Engine) buildImportMap() map[string]string {
-	if e.importMap != nil {
-		return e.importMap
-	}
-	e.importMap = make(map[string]string)
-	ambiguous := make(map[string]bool)
+	e.importOnce.Do(func() {
+		e.importMap = make(map[string]string)
+		ambiguous := make(map[string]bool)
 
-	// 1. All standard library packages.
-	e.collectPackages(ambiguous, "std")
+		// 1. All standard library packages.
+		e.collectPackages(ambiguous, "std")
 
-	// 2. Packages already used in the module (covers third-party deps).
-	e.collectPackages(ambiguous, "-deps", "-e", "./...")
+		// 2. Packages already used in the module (covers third-party deps).
+		e.collectPackages(ambiguous, "-deps", "-e", "./...")
 
-	// Remove ambiguous names (multiple import paths share a short name,
-	// e.g. "template" → text/template vs html/template).
-	for name := range ambiguous {
-		delete(e.importMap, name)
-	}
-
+		// Remove ambiguous names (multiple import paths share a short name,
+		// e.g. "template" → text/template vs html/template).
+		for name := range ambiguous {
+			delete(e.importMap, name)
+		}
+	})
 	return e.importMap
 }
 
@@ -396,9 +433,7 @@ func (e *Engine) manifestPath() string {
 
 func (e *Engine) loadManifest() *Manifest {
 	data, err := os.ReadFile(e.manifestPath())
-	if err != nil {
-		return &Manifest{Files: make(map[string]ManifestEntry)}
-	}
+	_ = err // @inco: err == nil, -return(&Manifest{Files: make(map[string]ManifestEntry)})
 	var m Manifest
 	if json.Unmarshal(data, &m) != nil || m.Files == nil {
 		return &Manifest{Files: make(map[string]ManifestEntry)}
