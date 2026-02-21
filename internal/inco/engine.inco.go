@@ -216,7 +216,7 @@ func (e *Engine) generateShadow(path string, f *ast.File, fset *token.FileSet) [
 
 		if d, ok := standalone[lineNum]; ok {
 			indent := extractIndent(line)
-			output = append(output, fmt.Sprintf("%s//line %s:%d", indent, path, lineNum))
+			output = append(output, fmt.Sprintf("//line %s:%d", path, lineNum))
 			output = append(output, e.generateIfBlock(d, indent, path, lineNum))
 			prevWasDirective = true
 		} else if d, ok := inline[lineNum]; ok {
@@ -226,8 +226,7 @@ func (e *Engine) generateShadow(path string, f *ast.File, fset *token.FileSet) [
 			prevWasDirective = true
 		} else {
 			if prevWasDirective {
-				indent := extractIndent(line)
-				output = append(output, fmt.Sprintf("%s//line %s:%d", indent, path, lineNum))
+				output = append(output, fmt.Sprintf("//line %s:%d", path, lineNum))
 				prevWasDirective = false
 			}
 			output = append(output, line)
