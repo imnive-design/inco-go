@@ -279,6 +279,7 @@ func (e *Engine) generateIfBlock(d *Directive, indent, path string, line int) st
 //   - ActionReturn + args → return arg0, arg1, ...
 //   - ActionReturn bare   → return
 //   - ActionContinue      → continue
+//   - ActionDo + args     → args[0]; args[1]; ...
 //   - ActionBreak         → break
 //   - ActionPanic + args  → panic(arg)
 //   - ActionPanic default → panic("inco violation: <expr> (at file:line)")
@@ -293,6 +294,10 @@ func (e *Engine) buildPanicBody(d *Directive, path string, line int) string {
 		return "continue"
 	case ActionBreak:
 		return "break"
+	case ActionDo:
+		return d.ActionArgs[0]
+	case ActionLog:
+		return "log.Println(" + strings.Join(d.ActionArgs, ", ") + ")"
 	default: // ActionPanic
 		if len(d.ActionArgs) > 0 {
 			return "panic(" + d.ActionArgs[0] + ")"

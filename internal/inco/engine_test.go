@@ -460,6 +460,33 @@ func FindFirst(nums []int) {
 }
 
 // ---------------------------------------------------------------------------
+// Log action
+// ---------------------------------------------------------------------------
+
+func TestEngine_Log(t *testing.T) {
+	dir := setupDir(t, map[string]string{
+		"main.go": `package main
+
+func Check(x int) {
+	// @inco: x > 0, -log("x is not positive", x)
+	_ = x
+}
+`,
+	})
+	e := NewEngine(dir)
+	if err := e.Run(); err != nil {
+		t.Fatal(err)
+	}
+	shadow := readShadow(t, e)
+	if !strings.Contains(shadow, "if !(x > 0)") {
+		t.Errorf("should contain negated condition, got:\n%s", shadow)
+	}
+	if !strings.Contains(shadow, `log.Println("x is not positive", x)`) {
+		t.Errorf("should contain log.Println call, got:\n%s", shadow)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Struct field comments — should NOT be processed
 // ---------------------------------------------------------------------------
 

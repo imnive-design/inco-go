@@ -48,6 +48,7 @@ Inline 形式用于变量只在指令中使用的场景——`_ = var` 消除编
 | return（裸） | `// @inco: <expr>, -return` | 裸 return |
 | continue | `// @inco: <expr>, -continue` | continue 循环 |
 | break | `// @inco: <expr>, -break` | break 循环 |
+| log | `// @inco: <expr>, -log(args...)` | log.Println(args...) |
 
 ### 4. 指令语义
 

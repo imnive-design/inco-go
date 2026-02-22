@@ -17,7 +17,7 @@ var (
 	// Group 1: expression
 	// Group 2: action name (panic|return|continue|break)
 	// Group 3: action arguments (optional)
-	actionRe = regexp.MustCompile(`^(.+),\s*-(panic|return|continue|break)(?:\((.+)\))?\s*$`)
+	actionRe = regexp.MustCompile(`^(.+),\s*-(panic|return|continue|break|log)(?:\((.+)\))?\s*$`)
 
 	// commentRe strips Go comment delimiters.
 	// Group 1: content of // comment
@@ -31,6 +31,7 @@ var actionFromName = map[string]ActionKind{
 	"return":   ActionReturn,
 	"continue": ActionContinue,
 	"break":    ActionBreak,
+	"log":      ActionLog,
 }
 
 // ParseDirective extracts a Directive from a comment string.
@@ -50,7 +51,13 @@ func ParseDirective(comment string) *Directive {
 		d.Expr = strings.TrimSpace(am[1])
 		d.Action = actionFromName[am[2]]
 		if am[3] != "" {
-			d.ActionArgs = splitTopLevel(am[3])
+			if d.Action == ActionDo {
+				// -do keeps raw content as a single arg so that
+				// commas in statements (e.g. return a, b) are preserved.
+				d.ActionArgs = []string{strings.TrimSpace(am[3])}
+			} else {
+				d.ActionArgs = splitTopLevel(am[3])
+			}
 		}
 	} else {
 		d.Expr = rest

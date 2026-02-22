@@ -7,6 +7,7 @@
 //	// @inco: <expr>, -return(x, y)
 //	// @inco: <expr>, -continue
 //	// @inco: <expr>, -break
+//	// @inco: <expr>, -do(stmt)
 //
 // The default action is -panic with an auto-generated message.
 package inco
@@ -23,6 +24,8 @@ const (
 	ActionReturn                     // return (with optional values)
 	ActionContinue                   // continue enclosing loop
 	ActionBreak                      // break enclosing loop
+	ActionDo                         // execute arbitrary statement
+	ActionLog                        // log.Println(...)
 )
 
 var actionNames = map[ActionKind]string{
@@ -30,6 +33,8 @@ var actionNames = map[ActionKind]string{
 	ActionReturn:   "return",
 	ActionContinue: "continue",
 	ActionBreak:    "break",
+	ActionDo:       "do",
+	ActionLog:      "log",
 }
 
 func (k ActionKind) String() string {
@@ -45,7 +50,7 @@ func (k ActionKind) String() string {
 
 // Directive is the parsed form of a single @inco: comment.
 type Directive struct {
-	Action     ActionKind // panic (default), return, continue, break
+	Action     ActionKind // panic (default), return, continue, break, do, log
 	ActionArgs []string   // e.g. -panic("msg") → ['"msg"'], -return(0, err) → ["0", "err"]
 	Expr       string     // the Go boolean expression
 }
