@@ -63,8 +63,17 @@ Inline 形式用于变量只在指令中使用的场景——`_ = var` 消除编
 ## 文件约定
 
 - `foo.inco.go` — 包含 `@inco:` 指令的源文件（推荐命名）
-- `.inco_cache/` — 生成的影子文件和 overlay.json（加入 .gitignore）
-- `foo_test.go` — 测试文件（不会被 inco 处理）
+- `.inco_cache/` — 生成的影子文件、overlay.json 和 manifest.json（加入 .gitignore）
+- `foo_test.go` — 测试文件（不会被 inco 处理，gen 和 audit 均跳过）
+- `.incoignore` — 排除文件/目录，支持层级嵌套（类 .gitignore 语法）
+
+### 自动跳过的路径
+
+以下路径无论是否配置 `.incoignore` 都会被跳过：
+- 隐藏目录（`.git`、`.idea` 等）
+- `vendor/`
+- `testdata/`
+- 测试文件（`_test.go`）
 
 ## 编写规范
 
@@ -74,6 +83,7 @@ Inline 形式用于变量只在指令中使用的场景——`_ = var` 消除编
 2. 错误处理优先用 inline 形式：`_ = err // @inco: err == nil, -panic(err)`
 3. 函数入口的参数校验用 standalone：`// @inco: root != ""`
 4. 循环中的过滤条件可以用 `-continue` 或 `-break`
+5. 指令中可以引用任何可用包（如 `fmt.Errorf`、`filepath.SkipDir`），auto-import 会自动处理
 
 ### if → @inco: 转换模板
 
@@ -118,12 +128,27 @@ inco test ./...      # gen + test
 inco audit .         # 覆盖率报告
 
 # 发布（无需 inco 即可 go build）
-inco release .       # .inco.go → .inco（备份）+ .go（含守卫）
-inco release clean . # 恢复
+inco release .            # .inco.go → .inco（备份）+ .go（含守卫）
+inco release --dry-run .  # 预览，不写文件
+inco release clean .      # 恢复
 
 # 清理
 inco clean .         # 删除 .inco_cache/
 ```
+
+## 引擎细节
+
+### 增量构建
+
+`inco gen` 维护 `.inco_cache/manifest.json`，记录每个源文件的 SHA-256 哈希。未变更的文件直接跳过，孤立的旧 shadow 文件自动清理。
+
+### 并行处理
+
+文件解析和 shadow 生成按 `GOMAXPROCS` 并行，每个 goroutine 独立 `token.FileSet`。
+
+### 自动导入
+
+指令参数中的 `pkg.Func` 引用会自动注入 import。通过 `go list` 一次性构建包名→路径映射（缓存），同名包（如 `template`）会被移除以避免歧义，internal/vendor 包被过滤。
 
 ## 审计指标
 
